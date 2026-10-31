@@ -29,7 +29,7 @@
   var dateDay = document.getElementById("allDateDay");
   var dateFrom = document.getElementById("allDateFrom");
   var dateTo = document.getElementById("allDateTo");
-  var monthSel = document.getElementById("allMonth");
+  var monthInput = document.getElementById("allMonth");
   var yearSel = document.getElementById("allYear");
   var periodGo = document.getElementById("allPeriodGo");
   var periodClose = document.getElementById("allPeriodClose");
@@ -292,8 +292,8 @@
     });
     dateDay.hidden = mode !== "day";
     dateFrom.hidden = dateTo.hidden = mode !== "period";
-    monthSel.hidden = mode !== "month";
-    yearSel.hidden = mode !== "month" && mode !== "year";
+    monthInput.hidden = mode !== "month";
+    yearSel.hidden = mode !== "year";
   }
 
   function openPeriodPicker(topic) {
@@ -303,7 +303,8 @@
     dateDay.value = todayISO();
     dateFrom.value = "";
     dateTo.value = "";
-    monthSel.value = String(now.getMonth() + 1);
+    monthInput.value = now.getFullYear() + "-" +
+      (now.getMonth() + 1 < 10 ? "0" : "") + (now.getMonth() + 1);
     yearSel.value = String(now.getFullYear());
     setPeriodMode("day");
     period.hidden = false;
@@ -323,8 +324,9 @@
       text = botTopic + " " + isoToText(from || to);
       if (from && to && from !== to) text += " to " + isoToText(to);
     } else if (periodMode === "month") {
-      var y = parseInt(yearSel.value, 10);
-      var m = parseInt(monthSel.value, 10);
+      if (!monthInput.value) return;
+      var ym = monthInput.value.split("-");
+      var y = parseInt(ym[0], 10), m = parseInt(ym[1], 10);
       var last = new Date(y, m, 0).getDate();
       text = botTopic + " 1 " + MONTHS_SHORT[m - 1] + " " + y +
              " to " + last + " " + MONTHS_SHORT[m - 1] + " " + y;
@@ -356,6 +358,16 @@
       period.hidden = true;
       input.focus();
     }
+  });
+  // Live send: picking a complete value for the active mode sends it —
+  // day on date pick, month on month pick, year on year pick, and a
+  // period once both from + to dates are chosen.
+  period.addEventListener("change", function () {
+    if (periodMode === "day" && !dateDay.value) return;
+    if (periodMode === "month" && !monthInput.value) return;
+    if (periodMode === "year" && !yearSel.value) return;
+    if (periodMode === "period" && !(dateFrom.value && dateTo.value)) return;
+    sendPeriod();
   });
   periodGo.addEventListener("click", sendPeriod);
   periodClose.addEventListener("click", function () {

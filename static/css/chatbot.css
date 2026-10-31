@@ -20,6 +20,7 @@
 }
 
 :root {
+  color-scheme: light;
   --font-family: "Manrope", system-ui, -apple-system, sans-serif;
   --ink: #10211f;
   --teal-rgb: 24, 122, 111;
@@ -46,6 +47,7 @@
 
 html[data-theme="dark"] :root,
 html[data-theme="dark"] {
+  color-scheme: dark;
   --danger-text: #fca5a5;
   --wa-panel: #111b21;
   --wa-panel-2: #202c33;
@@ -1940,7 +1942,9 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
 }
 
 .wa-period input[type="date"],
+.wa-period input[type="month"],
 .wa-period select {
+  color-scheme: inherit;
   border: 1px solid var(--wa-line);
   border-radius: 8px;
   background: var(--wa-panel-2);
@@ -1949,6 +1953,20 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
   font-size: 0.74rem;
   padding: 0.28rem 0.4rem;
   max-width: 8.6rem;
+}
+
+.wa-period input:focus-visible,
+.wa-period select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--wa-send) 45%, transparent);
+  outline-offset: 0;
+  border-color: var(--wa-send);
+}
+
+.wa-period input::-webkit-calendar-picker-indicator { cursor: pointer; }
+
+.wa-period__btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--wa-send) 45%, transparent);
+  outline-offset: 1px;
 }
 
 /* Same picker under the all-shops chips — chips already draw the top rule */
@@ -2118,7 +2136,8 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
 
   /* Period bar stays compact */
   .wa-period { gap: 0.25rem; padding: 0.4rem 0.5rem; }
-  .wa-period input[type="date"] { max-width: 7.8rem; font-size: 0.85rem; }
+  .wa-period input[type="date"],
+  .wa-period input[type="month"] { max-width: 7.8rem; font-size: 0.85rem; }
 
   /* Stock line rows never overflow */
   .wa-stock-line input[type="number"] { width: 3.6rem; }

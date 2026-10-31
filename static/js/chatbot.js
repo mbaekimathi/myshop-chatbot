@@ -90,7 +90,7 @@
     dateDay: root.querySelector("[data-wa-date-day]"),
     dateFrom: root.querySelector("[data-wa-date-from]"),
     dateTo: root.querySelector("[data-wa-date-to]"),
-    monthSel: root.querySelector("[data-wa-month]"),
+    monthInput: root.querySelector("[data-wa-month]"),
     yearSel: root.querySelector("[data-wa-year]"),
     periodGo: root.querySelector("[data-wa-period-go]"),
     periodClose: root.querySelector("[data-wa-period-close]"),
@@ -1949,8 +1949,8 @@
     });
     els.dateDay.hidden = mode !== "day";
     els.dateFrom.hidden = els.dateTo.hidden = mode !== "period";
-    els.monthSel.hidden = mode !== "month";
-    els.yearSel.hidden = mode !== "month" && mode !== "year";
+    els.monthInput.hidden = mode !== "month";
+    els.yearSel.hidden = mode !== "year";
   }
 
   function openPeriodPicker(topic) {
@@ -1960,7 +1960,8 @@
     els.dateDay.value = todayISO();
     els.dateFrom.value = "";
     els.dateTo.value = "";
-    els.monthSel.value = String(now.getMonth() + 1);
+    els.monthInput.value = now.getFullYear() + "-" +
+      (now.getMonth() + 1 < 10 ? "0" : "") + (now.getMonth() + 1);
     els.yearSel.value = String(now.getFullYear());
     setPeriodMode("day");
     els.period.hidden = false;
@@ -1992,6 +1993,18 @@
     }
   });
 
+  // Live send: picking a complete value for the active mode sends it —
+  // day on date pick, month on month pick, year on year pick, and a
+  // period once both from + to dates are chosen.
+  els.period.addEventListener("change", function () {
+    var m = state.periodMode;
+    if (m === "day" && !els.dateDay.value) return;
+    if (m === "month" && !els.monthInput.value) return;
+    if (m === "year" && !els.yearSel.value) return;
+    if (m === "period" && !(els.dateFrom.value && els.dateTo.value)) return;
+    sendPeriodRange();
+  });
+
   function sendPeriodRange() {
     var text = null;
     var mode = state.periodMode;
@@ -2005,8 +2018,9 @@
       text = state.botTopic + " " + isoToText(from || to);
       if (from && to && from !== to) text += " to " + isoToText(to);
     } else if (mode === "month") {
-      var y = parseInt(els.yearSel.value, 10);
-      var m = parseInt(els.monthSel.value, 10);
+      if (!els.monthInput.value) return;
+      var ym = els.monthInput.value.split("-");
+      var y = parseInt(ym[0], 10), m = parseInt(ym[1], 10);
       var last = new Date(y, m, 0).getDate();
       text = state.botTopic + " 1 " + MONTHS_SHORT[m - 1] + " " + y +
              " to " + last + " " + MONTHS_SHORT[m - 1] + " " + y;

@@ -38,6 +38,15 @@ conversation list + new messages; the JS polls ~2.5s (8s hidden, exponential
 backoff on errors). Presence = `Participant.last_seen_at` (25s window),
 typing = `typing_until` (+4s), read ticks = `last_read_id`.
 
+## Deploy (cPanel/Passenger at /home3/richcomc/CHAT)
+```bash
+./deploy.sh   # pull → pip install → migrate → collectstatic --clear → restart
+```
+- WhiteNoise serves `staticfiles/` in production — without collectstatic,
+  pulled JS/CSS changes stay invisible (symptom: works on localhost only).
+- Passenger restart = `touch tmp/restart.txt` (app root `tmp/`).
+- Bump `?v=` in templates when editing JS/CSS so browsers drop cache.
+
 ## Tests
 ```bash
 MYSQL_ENABLED=False python manage.py test chat

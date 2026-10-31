@@ -5,6 +5,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="description" content="{{ company_name|default:'MY-SHOP' }} — shop-to-shop chat and business data assistant.">
+  <link rel="manifest" href="{% static 'manifest.json' %}">
+  <meta name="theme-color" content="#00a884">
+  <link rel="apple-touch-icon" href="{% static 'img/icon-192.png' %}">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#075e54">
   <title>{% block title %}{{ company_name|default:"MY-SHOP" }} Chat{% endblock %}</title>

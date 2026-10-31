@@ -42,6 +42,18 @@
         <p>Use your shop's shared 6-digit code and password.</p>
       </header>
 
+      <div class="install-card" data-install-card hidden>
+        <span class="install-card__icon" aria-hidden="true"><i data-lucide="smartphone"></i></span>
+        <div class="install-card__body">
+          <b>Get the app</b>
+          <small data-install-hint>Install MY-SHOP Chat for one-tap access.</small>
+        </div>
+        <button type="button" class="btn install-card__btn" data-install-btn>
+          <i data-lucide="download" aria-hidden="true"></i>
+          <span>Install</span>
+        </button>
+      </div>
+
       <div class="auth-tabs" role="tablist">
         <button type="button" class="auth-tab{% if mode != "employee" %} is-active{% endif %}" data-auth-tab="shop" role="tab">
           <i data-lucide="store" aria-hidden="true"></i><span>Shop</span>
@@ -207,6 +219,42 @@
         empToggle.querySelector("[data-eye-open-emp]").hidden = show;
         empToggle.querySelector("[data-eye-closed-emp]").hidden = !show;
       });
+    }
+
+    // PWA install — show the card when the browser can install, or always on
+    // mobile so the user gets Add-to-Home-Screen instructions.
+    var installCard = document.querySelector("[data-install-card]");
+    var installBtn = document.querySelector("[data-install-btn]");
+    var installHint = document.querySelector("[data-install-hint]");
+    var deferredPrompt = null;
+
+    if (installCard) {
+      var isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      if (isMobile || window.matchMedia("(display-mode: browser)").matches) {
+        installCard.hidden = false;
+      }
+      window.addEventListener("beforeinstallprompt", function (e) {
+        e.preventDefault();
+        deferredPrompt = e;
+        installCard.hidden = false;
+      });
+      window.addEventListener("appinstalled", function () {
+        installCard.hidden = true;
+      });
+      if (installBtn) {
+        installBtn.addEventListener("click", function () {
+          if (deferredPrompt) {
+            deferredPrompt.prompt();
+            deferredPrompt = null;
+          } else {
+            installHint.textContent =
+              "Tap your browser menu (⋮ / Share) → 'Add to Home Screen'.";
+          }
+        });
+      }
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/static/sw.js", { scope: "/" });
+      }
     }
 
     var themeBtn = document.querySelector("[data-theme-toggle]");

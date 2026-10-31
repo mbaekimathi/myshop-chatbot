@@ -2527,3 +2527,42 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
   --wa-text: var(--wa-ink);
   --wa-input-bg: var(--wa-panel-2);
 }
+
+/* Login — install-app card */
+
+.install-card {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.65rem 0.75rem;
+  margin-bottom: 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--wa-send) 40%, var(--wa-line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--wa-send) 8%, transparent);
+}
+
+.install-card__icon {
+  width: 2.2rem;
+  height: 2.2rem;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--wa-send);
+  color: #fff;
+}
+
+.install-card__icon .lucide { width: 1.1rem; height: 1.1rem; }
+
+.install-card__body { flex: 1; min-width: 0; display: grid; }
+.install-card__body b { font-size: 0.85rem; }
+.install-card__body small { color: var(--wa-muted); font-size: 0.72rem; }
+
+.install-card__btn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.8rem;
+}

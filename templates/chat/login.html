@@ -229,14 +229,18 @@
     var deferredPrompt = null;
 
     if (installCard) {
-      var isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-      if (isMobile || window.matchMedia("(display-mode: browser)").matches) {
-        installCard.hidden = false;
-      }
+      // Already installed → running standalone → never show the card.
+      var installed =
+        window.matchMedia("(display-mode: standalone)").matches ||
+        window.matchMedia("(display-mode: fullscreen)").matches ||
+        window.navigator.standalone === true ||           // iOS
+        (document.referrer || "").indexOf("android-app://") === 0;
+      installCard.hidden = installed;
+
       window.addEventListener("beforeinstallprompt", function (e) {
         e.preventDefault();
         deferredPrompt = e;
-        installCard.hidden = false;
+        if (!installed) installCard.hidden = false;
       });
       window.addEventListener("appinstalled", function () {
         installCard.hidden = true;
@@ -252,8 +256,21 @@
           }
         });
       }
+      // Auto-update: check for a new service worker on every load so a
+      // freshly deployed version is picked up automatically on login.
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("/static/sw.js", { scope: "/" });
+        navigator.serviceWorker
+          .register("/static/sw.js", { scope: "/" })
+          .then(function (reg) {
+            reg.update();
+            reg.addEventListener("updatefound", function () {
+              var w = reg.installing;
+              if (w) w.addEventListener("statechange", function () {
+                if (w.state === "activated") location.reload();
+              });
+            });
+          })
+          .catch(function () {});
       }
     }
 

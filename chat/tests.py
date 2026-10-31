@@ -5,12 +5,14 @@ explicitly with schema_editor so no MySQL server is needed:
 """
 
 import json
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.hashers import make_password
 from django.db import connection
 from django.test import Client, TransactionTestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from . import services
 from .bot import reply_for
@@ -267,6 +269,28 @@ class BotTests(ChatTestCase):
         reply = reply_for(self.shop_a, "receipt R-001")
         self.assertIn("R-001", reply)
         self.assertIn("KSh 1,500.00", reply)
+
+    def test_credit_window_filter(self):
+        r = ShopReceipt.objects.create(
+            shop_id=self.shop_a.pk, receipt_number="C-002",
+            kind="credit", payment_method="none", client_name="Joe",
+            total=Decimal("1000"), amount_paid=Decimal("400"),
+            cash_amount=Decimal("0"), mpesa_amount=Decimal("0"),
+            status="confirmed",
+        )
+        ShopReceipt.objects.filter(pk=r.pk).update(
+            created_at=timezone.now() - timedelta(days=400)
+        )
+        # Bare "credits" stays all-time: the old balance still shows.
+        self.assertIn("KSh 600.00", reply_for(self.shop_a, "credits"))
+        # A window containing the issue date shows it, labelled.
+        reply = reply_for(self.shop_a, "credits 1 Jan 2025 to 31 Dec 2025")
+        self.assertIn("KSh 600.00", reply)
+        self.assertIn("issued 01 Jan 2025", reply)
+        # A window that excludes it reports nothing.
+        self.assertIn(
+            "No outstanding credit", reply_for(self.shop_a, "credits today")
+        )
 
     def test_help_intent(self):
         reply = reply_for(self.shop_a, "help")

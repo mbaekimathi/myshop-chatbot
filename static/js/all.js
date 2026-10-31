@@ -135,7 +135,8 @@
           '</td><td class="n">' + esc(r.balance) + '</td><td class="n">' +
           esc(r.due || "—") + "</td></tr>";
       }).join("");
-      return tableCard("hand-coins", "Outstanding credit — all shops", [
+      return tableCard("hand-coins", "Outstanding credit — all shops" +
+        (cr.label ? " · " + cr.label : ""), [
         ["#"], ["Customer"], ["Shop"], ["Receipt"], ["Balance", 1], ["Due", 1]
       ], crows, "<b>" + esc(cr.total) + "</b> across " + cr.count +
         " receipts");
@@ -306,6 +307,7 @@
     yearSel.value = String(now.getFullYear());
     setPeriodMode("day");
     period.hidden = false;
+    dateDay.focus();
     if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
   }
 
@@ -331,18 +333,29 @@
              " to 31 Dec " + parseInt(yearSel.value, 10);
     }
     if (!text) return;
+    dateFrom.value = "";
+    dateTo.value = "";
     period.hidden = true;
     send(text);
   }
 
   sugs.addEventListener("click", function (e) {
     var b = e.target.closest("[data-sug]");
-    if (b) openPeriodPicker(b.textContent.trim());
+    if (b) openPeriodPicker(b.dataset.sug);
   });
 
   period.addEventListener("click", function (e) {
     var b = e.target.closest("[data-period-mode]");
     if (b) setPeriodMode(b.dataset.periodMode);
+  });
+  period.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.target.closest("button")) {
+      e.preventDefault();
+      sendPeriod();
+    } else if (e.key === "Escape") {
+      period.hidden = true;
+      input.focus();
+    }
   });
   periodGo.addEventListener("click", sendPeriod);
   periodClose.addEventListener("click", function () {

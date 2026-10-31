@@ -171,6 +171,22 @@ def _date_range(text: str):
     return today, today, "today"
 
 
+def _time_window(text: str):
+    """(start, end, label) when the text names a period, else None.
+
+    Used for point-in-time reports (credit): a bare "credits" means all-time
+    outstanding, but once any window is given — explicit dates or a
+    today/week/month/year word — the report scopes to rows created inside it.
+    """
+    t = text.lower()
+    today = _local_now().date()
+    if _explicit_dates(t, today) or re.search(
+        r"\b(today|yesterday|jana|week|month|year)\b", t
+    ):
+        return _date_range(text)
+    return None
+
+
 def _window(start_date, end_date):
     """Inclusive [start_date, end_date] as aware datetimes.
 
@@ -252,15 +268,23 @@ def _expenses_reply(shop: Shop, text: str) -> str:
 
 
 def _credit_reply(shop: Shop, text: str) -> str:
+    win = _time_window(text)
     qs = ShopReceipt.objects.filter(
         shop_id=shop.pk, kind=CREDIT_KIND, status__in=COUNTED_STATUSES
-    ).annotate(balance=F("total") - F("amount_paid")).filter(balance__gt=0)
+    )
+    if win:
+        start_dt, end_dt = _window(win[0], win[1])
+        qs = qs.filter(created_at__gte=start_dt, created_at__lt=end_dt)
+    qs = qs.annotate(balance=F("total") - F("amount_paid")).filter(balance__gt=0)
     total = qs.aggregate(t=Sum("balance"))["t"] or 0
     count = qs.count()
     if not count:
+        if win:
+            return f"No outstanding credit issued {win[2]} at {shop.name}."
         return f"{shop.name} has no outstanding customer credit. Clean books!"
+    scope = f" issued {win[2]}" if win else ""
     lines = [
-        f"*Outstanding credit — {shop.name}*",
+        f"*Outstanding credit{scope} — {shop.name}*",
         f"*{money(total)}* owed across {count} receipt{'s' if count != 1 else ''}",
         "",
         "Largest balances:",
@@ -674,17 +698,21 @@ def card_meta(shop: Shop, text: str):
         }
 
     if re.search(r"\b(credits?|debts?|owe|owed|deni|denis|balances?)\b", low):
-        qs = (
-            ShopReceipt.objects.filter(
-                shop_id=shop.pk, kind=CREDIT_KIND, status__in=COUNTED_STATUSES
-            )
-            .annotate(balance=F("total") - F("amount_paid"))
-            .filter(balance__gt=0)
+        win = _time_window(t)
+        qs = ShopReceipt.objects.filter(
+            shop_id=shop.pk, kind=CREDIT_KIND, status__in=COUNTED_STATUSES
+        )
+        if win:
+            start_dt, end_dt = _window(win[0], win[1])
+            qs = qs.filter(created_at__gte=start_dt, created_at__lt=end_dt)
+        qs = qs.annotate(balance=F("total") - F("amount_paid")).filter(
+            balance__gt=0
         )
         if not qs.exists():
             return None
         return {
             "credits": {
+                "label": win[2] if win else "",
                 "total": money(qs.aggregate(t=Sum("balance"))["t"]),
                 "count": qs.count(),
                 "rows": [
@@ -790,19 +818,28 @@ def reply_for_all(text: str) -> str:
     )}
 
     if re.search(r"\b(credits?|debts?|owed|balances?)\b", low):
-        qs = (
-            ShopReceipt.objects.filter(kind=CREDIT_KIND, status__in=COUNTED_STATUSES)
-            .annotate(balance=F("total") - F("amount_paid"))
-            .filter(balance__gt=0)
+        win = _time_window(t)
+        qs = ShopReceipt.objects.filter(
+            kind=CREDIT_KIND, status__in=COUNTED_STATUSES
+        )
+        if win:
+            qs = qs.filter(
+                created_at__gte=start_dt, created_at__lt=end_dt
+            )
+        qs = qs.annotate(balance=F("total") - F("amount_paid")).filter(
+            balance__gt=0
         )
         rows = qs.values("shop_id").annotate(
             t=Sum("balance"), c=Count("id")
         ).order_by("-t")
         total = qs.aggregate(t=Sum("balance"))["t"] or 0
         if not total:
+            if win:
+                return f"No outstanding credit issued {label} across all shops."
             return "No outstanding customer credit across all shops."
+        scope = f" issued {label}" if win else ""
         lines = [
-            f"*Outstanding credit — ALL SHOPS*",
+            f"*Outstanding credit{scope} — ALL SHOPS*",
             f"*{money(total)}* owed across {qs.count()} receipts",
             "",
         ]
@@ -965,18 +1002,23 @@ def card_for_all(text: str):
         )
 
     if re.search(r"\b(credits?|debts?|owed|balances?)\b", low):
-        qs = (
-            ShopReceipt.objects.filter(
-                kind=CREDIT_KIND, status__in=COUNTED_STATUSES
+        win = _time_window(t)
+        qs = ShopReceipt.objects.filter(
+            kind=CREDIT_KIND, status__in=COUNTED_STATUSES
+        )
+        if win:
+            qs = qs.filter(
+                created_at__gte=start_dt, created_at__lt=end_dt
             )
-            .annotate(balance=F("total") - F("amount_paid"))
-            .filter(balance__gt=0)
+        qs = qs.annotate(balance=F("total") - F("amount_paid")).filter(
+            balance__gt=0
         )
         if not qs.exists():
             return None
         names = _shop_names(qs)
         return {
             "credits": {
+                "label": label if win else "",
                 "total": money(qs.aggregate(t=Sum("balance"))["t"]),
                 "count": qs.count(),
                 "rows": [

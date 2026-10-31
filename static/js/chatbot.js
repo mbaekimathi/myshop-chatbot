@@ -443,7 +443,8 @@
           "</td><td class=\"n\">" + escapeHtml(r.balance) + "</td><td class=\"n\">" +
           escapeHtml(r.due || "—") + "</td></tr>";
       }).join("");
-      return tableCard("hand-coins", "Outstanding credit", [
+      return tableCard("hand-coins", "Outstanding credit" +
+        (cr.label ? " · " + cr.label : ""), [
         ["#"], ["Customer"], ["Receipt"], ["Balance", 1], ["Due", 1]
       ], crows, "<b>" + escapeHtml(cr.total) + "</b> across " + cr.count +
         " receipts");
@@ -1963,6 +1964,7 @@
     els.yearSel.value = String(now.getFullYear());
     setPeriodMode("day");
     els.period.hidden = false;
+    els.dateDay.focus();
     refreshIcons();
   }
 
@@ -1978,6 +1980,16 @@
   els.period.addEventListener("click", function (e) {
     var btn = e.target.closest("[data-period-mode]");
     if (btn) setPeriodMode(btn.dataset.periodMode);
+  });
+
+  els.period.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.target.closest("button")) {
+      e.preventDefault();
+      sendPeriodRange();
+    } else if (e.key === "Escape") {
+      els.period.hidden = true;
+      els.input.focus();
+    }
   });
 
   function sendPeriodRange() {

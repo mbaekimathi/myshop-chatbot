@@ -9,6 +9,7 @@ import re
 from django.core.cache import cache
 from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
@@ -21,6 +22,7 @@ from .auth import (
     authenticate_shop,
     current_employee,
     current_shop,
+    employee_allocated_to_shop,
     login_employee,
     login_shop,
     logout_shop,
@@ -52,6 +54,21 @@ def _json_body(request) -> dict:
 
 def _err(message: str, status: int = 400) -> JsonResponse:
     return JsonResponse({"ok": False, "error": message}, status=status)
+
+
+def _needs_member_confirmation(request, shop) -> bool:
+    """Staff acting on a shop they aren't allocated to need a member's code.
+
+    Employees signed in through the staff portal (admin / manager / IT
+    support) can operate any shop via the picker. When the acting employee
+    isn't allocated to the shop, stock-in and transfer only proceed after a
+    member of that shop confirms by entering their own staff code. Shop
+    portal sessions act as the shop itself, so they skip this check.
+    """
+    emp = current_employee(request)
+    if emp is None:
+        return False
+    return not employee_allocated_to_shop(emp["id"], shop.pk)
 
 
 def _client_ip(request) -> str:
@@ -131,8 +148,11 @@ def home(request):
 
 
 def login_view(request):
-    if current_shop(request) is not None and request.method == "GET":
-        return redirect("chat:app")
+    if request.method == "GET":
+        if current_shop(request) is not None:
+            return redirect("chat:app")
+        if current_employee(request) is not None:
+            return redirect("chat:all_shops")
 
     error = ""
     code = ""
@@ -159,7 +179,7 @@ def login_view(request):
                 cache.delete(key)
                 request.session.cycle_key()
                 login_employee(request, employee)
-                return redirect("chat:pick_shop")
+                return redirect("chat:all_shops")
         else:
             shop = authenticate_shop(code, password)
             if shop is None:
@@ -248,39 +268,29 @@ def _shop_overview():
     return rows, totals
 
 
+@require_POST
 def pick_shop(request):
-    """Employee-only all-shops dashboard — pick a shop to view as."""
+    """Employee-only shop switcher — the /all/ sidebar posts here."""
     employee = current_employee(request)
     if employee is None:
         return redirect("chat:login")
 
-    error = ""
-    if request.method == "POST":
-        if str(request.POST.get("shop_id")) == "all":
-            request.session["chatbot_all_shops"] = True
-            request.session.pop("chatbot_shop_id", None)
-            return redirect("chat:all_shops")
-        try:
-            shop = services.shop_by_id(int(request.POST.get("shop_id") or 0))
-        except (TypeError, ValueError):
-            shop = None
-        if shop is None:
-            error = "Pick a shop to continue."
-        else:
-            request.session.pop("chatbot_all_shops", None)
-            login_shop(request, shop)
-            return redirect("chat:app")
-
-    return render(
-        request,
-        "chat/pick_shop.html",
-        {
-            "shops": services.active_shops(),
-            "error": error,
-            "employee": employee,
-            "company_name": _company_name(),
-        },
-    )
+    if str(request.POST.get("shop_id")) == "all":
+        request.session["chatbot_all_shops"] = True
+        request.session.pop("chatbot_shop_id", None)
+        return redirect("chat:all_shops")
+    try:
+        shop = services.shop_by_id(int(request.POST.get("shop_id") or 0))
+    except (TypeError, ValueError):
+        shop = None
+    if shop is None:
+        return redirect("chat:all_shops")
+    request.session.pop("chatbot_all_shops", None)
+    login_shop(request, shop)
+    fab = (request.POST.get("fab") or "").strip()
+    if fab in {"sale", "stockin", "transfer"}:
+        return redirect(f"{reverse('chat:app')}?fab={fab}")
+    return redirect("chat:app")
 
 
 def all_shops_view(request):
@@ -288,12 +298,39 @@ def all_shops_view(request):
     employee = current_employee(request)
     if employee is None:
         return redirect("chat:login")
-    if not request.session.get("chatbot_all_shops"):
-        return redirect("chat:pick_shop")
+    # Landing here means combined view — drop any single-shop session.
+    request.session["chatbot_all_shops"] = True
+    request.session.pop("chatbot_shop_id", None)
+    rows, totals = _shop_overview()
+    for row in rows:
+        row["sales_fmt"] = bot_engine.money(row["sales"])
+        row["expenses_fmt"] = bot_engine.money(row["expenses"])
+        row["credit_fmt"] = bot_engine.money(row["credit"])
+    shops = [
+        {
+            "id": s.pk,
+            "name": s.name,
+            "location": s.location,
+            "initials": services.initials(s.name),
+            "tone": services.avatar_tone(s.pk),
+        }
+        for s in services.active_shops()
+    ]
     return render(
         request,
         "chat/all.html",
-        {"employee": employee, "company_name": _company_name()},
+        {
+            "employee": employee,
+            "company_name": _company_name(),
+            "shops": shops,
+            "shop_rows": rows,
+            "totals": {
+                "sales": bot_engine.money(totals["sales"]),
+                "receipts": totals["receipts"],
+                "expenses": bot_engine.money(totals["expenses"]),
+                "credit": bot_engine.money(totals["credit"]),
+            },
+        },
     )
 
 
@@ -309,7 +346,11 @@ def api_all_chat(request):
     if not text:
         return JsonResponse({"ok": False, "error": "Empty message."})
     return JsonResponse(
-        {"ok": True, "reply": bot_engine.reply_for_all(text)}
+        {
+            "ok": True,
+            "reply": bot_engine.reply_for_all(text),
+            "card": bot_engine.card_for_all(text),
+        }
     )
 
 
@@ -342,6 +383,8 @@ def app_view(request):
             "code": me.login_code,
             "initials": services.initials(me.name),
             "tone": services.avatar_tone(me.pk),
+            "staff_view": current_employee(request) is not None,
+            "needs_member_confirm": _needs_member_confirmation(request, me),
         },
         "conversations_json": json.dumps(_conversations_payload(me)),
         "contacts_json": json.dumps(contacts),
@@ -607,8 +650,19 @@ def api_transfer(request, conversation_id):
     else:
         destination = services.shop_by_id(peer.shop_id) if peer else None
 
+    if _needs_member_confirmation(request, me) and not (
+        data.get("staff_code") or ""
+    ).strip():
+        if destination is not None:
+            data = dict(data)
+            data["destination_shop_id"] = destination.pk
+        return _post_pending(request, me, "transfer", data)
+
     try:
-        dest_convo, msg = _create_transfer(me, destination, data)
+        dest_convo, msg = _create_transfer(
+            me, destination, data,
+            require_member=_needs_member_confirmation(request, me),
+        )
     except stock_ops.StockError as exc:
         return _err(str(exc))
 
@@ -618,11 +672,12 @@ def api_transfer(request, conversation_id):
     return JsonResponse(payload)
 
 
-def _create_transfer(me, destination, data):
+def _create_transfer(me, destination, data, require_member=False):
     """Shared transfer creation — returns (dest_convo, card_message)."""
     movement, lines = stock_ops.create_transfer(
         me, destination, data.get("lines") or [],
         staff_code=data.get("staff_code") or "",
+        require_member=require_member,
     )
     movement_lines = list(
         stock_ops.StockMovementLine.objects.filter(
@@ -658,8 +713,15 @@ def api_transfers(request):
     destination = services.shop_by_id(data.get("destination_shop_id"))
     if destination is None:
         return _err("Select a shop to transfer to.")
+    if _needs_member_confirmation(request, me) and not (
+        data.get("staff_code") or ""
+    ).strip():
+        return _post_pending(request, me, "transfer", data)
     try:
-        dest_convo, msg = _create_transfer(me, destination, data)
+        dest_convo, msg = _create_transfer(
+            me, destination, data,
+            require_member=_needs_member_confirmation(request, me),
+        )
     except stock_ops.StockError as exc:
         return _err(str(exc))
     return JsonResponse(
@@ -733,6 +795,113 @@ def api_transfer_respond(request, movement_id):
     return JsonResponse(payload)
 
 
+def _post_pending(request, me, action: str, data: dict) -> JsonResponse:
+    """Dry-run the action and post a pending-confirmation card.
+
+    Non-member staff can't complete stock actions directly — the validated
+    payload is stored on a card in the shop's Assistant thread until a
+    member of that shop confirms with their staff code.
+    """
+    emp = current_employee(request)
+    payload = {
+        k: v
+        for k, v in data.items()
+        if k not in ("staff_code", "csrfmiddlewaretoken")
+    }
+    try:
+        body, meta = stock_ops.build_pending(
+            action,
+            me,
+            payload,
+            requested_by=stock_ops.employee_label(emp["id"]) if emp else "",
+            requested_by_id=emp["id"] if emp else None,
+        )
+    except stock_ops.StockError as exc:
+        return _err(str(exc))
+    convo = services.get_or_create_bot(me)
+    msg = services.post_bot_reply(convo, body, meta)
+    me_part, _ = _participants(convo, me)
+    if me_part:
+        services.mark_read(me_part, msg.pk)
+    return JsonResponse(
+        {
+            "ok": True,
+            "pending": True,
+            "message": services.serialize_message(msg, me, None, True),
+            "conversation_id": convo.pk,
+        }
+    )
+
+
+@api_shop_required
+@require_POST
+def api_pending_confirm(request, message_id):
+    """A shop member's staff code executes a stored pending request.
+
+    The pending card becomes the real receipt/movement card in place; for
+    transfers the destination card is also posted into the direct
+    conversation so the receiving shop is notified.
+    """
+    me = request.chat_shop
+    msg = (
+        Message.objects.filter(
+            pk=message_id,
+            conversation__participants__shop_id=me.pk,
+        )
+        .select_related("conversation")
+        .first()
+    )
+    pa = (msg.meta or {}).get("pending_action") if msg else None
+    if msg is None or not isinstance(pa, dict):
+        return _err("Request not found.", 404)
+    if pa.get("status") != "pending":
+        return _err("This request was already handled.")
+
+    data = _json_body(request)
+    emp_id = stock_ops.member_employee_id(
+        data.get("staff_code") or "", me
+    )
+    if emp_id is None:
+        return _err(
+            "Only a member of this shop can confirm — "
+            "ask a shop staff member to enter their code."
+        )
+    try:
+        result = stock_ops.execute_pending(me, pa, emp_id)
+    except stock_ops.StockError as exc:
+        return _err(str(exc))
+
+    meta = dict(msg.meta or {})
+    meta.pop("pending_action", None)
+    meta.update(result["meta"])
+    meta["confirmed"] = {"by": stock_ops.employee_label(emp_id)}
+    msg.meta = meta
+    msg.body = result["body"]
+    msg.save(update_fields=["meta", "body"])
+
+    payload = {
+        "ok": True,
+        "message": services.serialize_message(msg, me, None, True),
+    }
+    if result["action"] == "transfer":
+        destination = result["destination"]
+        dest_convo = services.get_or_create_direct(me, destination)
+        card_msg = services.post_card(
+            dest_convo, me, result["body"], result["meta"]
+        )
+        card_msg.client_tag = f"transfer:{result['movement'].pk}"
+        card_msg.save(update_fields=["client_tag"])
+        dest_me_part, dest_peer = _participants(dest_convo, me)
+        if dest_me_part:
+            services.mark_read(dest_me_part, card_msg.pk)
+            services.touch_presence(dest_me_part)
+        payload["card"] = services.serialize_message(
+            card_msg, me, dest_peer
+        )
+        payload["card_conversation_id"] = dest_convo.pk
+    return JsonResponse(payload)
+
+
 @api_shop_required
 @require_POST
 def api_stock_in(request):
@@ -746,6 +915,10 @@ def api_stock_in(request):
     data = _json_body(request)
     supplier_name = (data.get("supplier_name") or "").strip()
     supplier_phone = (data.get("supplier_phone") or "").strip()
+    if _needs_member_confirmation(request, me) and not (
+        data.get("staff_code") or ""
+    ).strip():
+        return _post_pending(request, me, "stockin", data)
     try:
         movement, lines = stock_ops.create_stock_in(
             me,
@@ -753,6 +926,7 @@ def api_stock_in(request):
             supplier_name=supplier_name,
             supplier_phone=supplier_phone,
             staff_code=data.get("staff_code") or "",
+            require_member=_needs_member_confirmation(request, me),
         )
     except stock_ops.StockError as exc:
         return _err(str(exc))
@@ -785,6 +959,10 @@ def api_sale(request):
     """
     me = request.chat_shop
     data = _json_body(request)
+    if _needs_member_confirmation(request, me) and not (
+        data.get("staff_code") or ""
+    ).strip():
+        return _post_pending(request, me, "sale", data)
     due = None
     if data.get("credit_due_date"):
         try:
@@ -805,6 +983,7 @@ def api_sale(request):
             client_phone=data.get("client_phone") or "",
             credit_due_date=due,
             staff_code=data.get("staff_code") or "",
+            require_member=_needs_member_confirmation(request, me),
         )
     except stock_ops.StockError as exc:
         return _err(str(exc))

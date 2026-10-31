@@ -117,6 +117,25 @@ def current_employee(request):
     return {"id": row[0], "role": row[1]}
 
 
+def employee_allocated_to_shop(profile_id: int, shop_id: int) -> bool:
+    """True when the employee profile is assigned to this shop.
+
+    Mirrors MY-SHOP's `EmployeeProfile.assigned_shops` M2M — shop members are
+    the staff allocated to work inside that branch.
+    """
+    if not profile_id or not shop_id:
+        return False
+    from django.db import connection
+
+    with connection.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM employees_employeeprofile_assigned_shops "
+            "WHERE employeeprofile_id=%s AND shop_id=%s LIMIT 1",
+            [profile_id, shop_id],
+        )
+        return cur.fetchone() is not None
+
+
 def login_shop(request, shop: Shop) -> None:
     request.session[SESSION_SHOP_KEY] = shop.pk
 

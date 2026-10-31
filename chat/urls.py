@@ -40,6 +40,11 @@ urlpatterns = [
         name="api_transfer_respond",
     ),
     path(
+        "api/pending/<int:message_id>/confirm/",
+        views.api_pending_confirm,
+        name="api_pending_confirm",
+    ),
+    path(
         "api/conversations/<int:conversation_id>/send/",
         views.api_send,
         name="api_send",

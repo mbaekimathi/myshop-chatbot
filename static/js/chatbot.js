@@ -21,6 +21,7 @@
     transfer: root.dataset.transferBase,
     transfers: root.dataset.transfersUrl,
     respond: root.dataset.respondBase,
+    pendingConfirm: root.dataset.pendingBase,
     stockIn: root.dataset.stockinUrl,
     sale: root.dataset.saleUrl,
     itemSearch: root.dataset.itemSearchUrl,
@@ -58,6 +59,8 @@
     filter: "",
     contactFilter: "",
     lastTypingSent: 0,
+    botTopic: "",
+    periodMode: "day",
     stock: { mode: null, lines: [], picked: null, serials: [], submitting: false },
     rcvSerials: {},
     toastTimer: null
@@ -84,8 +87,11 @@
     suggestionsBar: root.querySelector("[data-wa-suggestions]"),
     period: root.querySelector("[data-wa-period]"),
     periodTopic: root.querySelector("[data-wa-period-topic]"),
+    dateDay: root.querySelector("[data-wa-date-day]"),
     dateFrom: root.querySelector("[data-wa-date-from]"),
     dateTo: root.querySelector("[data-wa-date-to]"),
+    monthSel: root.querySelector("[data-wa-month]"),
+    yearSel: root.querySelector("[data-wa-year]"),
     periodGo: root.querySelector("[data-wa-period-go]"),
     periodClose: root.querySelector("[data-wa-period-close]"),
     contacts: root.querySelector("[data-wa-contacts]"),
@@ -357,7 +363,7 @@
         );
       }).join("") +
       "</div>" +
-      (foot ? '<div class="wa-card__foot">' + escapeHtml(foot) + "</div>" : "") +
+      (foot ? '<div class="wa-card__foot">' + foot + "</div>" : "") +
       "</div>"
     );
   }
@@ -378,7 +384,7 @@
     );
   }
 
-  function cardHtml(card, mine) {
+  function cardHtml(card, mine, msgId) {
     var t = card.transfer, s = card.stock_in, it = card.items_sold;
     if (card.sale) {
       var sl = card.sale;
@@ -407,13 +413,17 @@
     }
     if (card.sales) {
       var c = card.sales;
+      var itemsLink = c.start && c.end
+        ? '<a class="wa-link" href="#" data-bitems="' +
+          escapeHtml(c.start + ":" + c.end) + '">View items sold →</a>'
+        : "";
       return statCard("trending-up", "Sales — " + c.label, [
         ["Total", c.total, 1],
         ["Receipts", c.receipts],
         ["Cash", c.cash],
         ["M-Pesa", c.mpesa],
         ["Credit issued", c.credit]
-      ]);
+      ], itemsLink);
     }
     if (card.summary) {
       var u = card.summary;
@@ -454,6 +464,40 @@
     }
     if (card.movement) {
       var mv = card.movement;
+      if (mv.groups) {
+        var nlines = 0;
+        var secs = mv.groups.map(function (g) {
+          nlines += (g.items || []).length;
+          var badge =
+            g.kind === "in" ? "+IN" : g.kind === "out" ? "−OUT" :
+            (g.kind === "tout" ? "→ " : "← ") + g.head;
+          var meta = [g.status, g.when].filter(Boolean).join(" · ");
+          var lines = (g.items || []).map(function (r, i) {
+            return "<tr><td class=\"n\">" + (i + 1) + "</td><td>" +
+              escapeHtml(r.item) + "</td><td class=\"n\">" +
+              escapeHtml(r.qty) + "</td></tr>";
+          }).join("");
+          return (
+            '<div class="wa-mvg"><div class="wa-mvg__head">' +
+            '<span class="wa-mv--' + g.kind + '">' + escapeHtml(badge) +
+            "</span>" +
+            (meta ? '<span class="wa-mvg__meta">' + escapeHtml(meta) +
+              "</span>" : "") +
+            "</div>" +
+            '<table class="wa-table"><thead><tr><th>#</th><th>Item</th>' +
+            '<th class="n">Qty</th></tr></thead><tbody>' + lines +
+            "</tbody></table></div>"
+          );
+        }).join("");
+        return (
+          '<div class="wa-card"><div class="wa-card__head wa-card__head--in">' +
+          '<i data-lucide="arrow-right-left"></i><span>Stock movement — ' +
+          escapeHtml(mv.label) + "</span></div>" +
+          '<div class="wa-card__tablewrap">' + secs + "</div>" +
+          '<div class="wa-card__foot">' + mv.groups.length +
+          " movements · " + nlines + " lines</div></div>"
+        );
+      }
       var mrows = (mv.rows || []).map(function (r) {
         var badge =
           r.kind === "in" ? "+IN" : r.kind === "out" ? "−OUT" :
@@ -490,7 +534,7 @@
     }
     if (t) {
       var pending = t.status === "pending";
-      var confirmRows = !mine && pending;
+      var confirmRows = !mine && pending && !t.readonly;
       var rows = "";
       (t.items || []).forEach(function (i, idx) {
         var snTotal = i.serial_count || (i.serials || []).length;
@@ -545,7 +589,7 @@
       } else if (t.status === "declined") {
         foot = '<div class="wa-card__foot">Declined' +
           (t.response_note ? ": " + escapeHtml(t.response_note) : "") + "</div>";
-      } else if (mine) {
+      } else if (mine || t.readonly) {
         foot = '<div class="wa-card__foot">To ' + escapeHtml(t.to_shop) +
           " · awaiting their confirmation</div>";
       } else {
@@ -600,6 +644,52 @@
         escapeHtml(s.supplier || "supplier") + " · " +
         escapeHtml(s.shop || "") + "</div></div>";
     }
+    if (card.pending_action) {
+      // A request posted by non-member staff — a shop member's staff code
+      // executes it. The confirmed card replaces this one on the server.
+      var pa = card.pending_action;
+      var prows = (pa.items || []).map(function (i, idx) {
+        var snHtml =
+          i.serials && i.serials.length
+            ? '<tr class="wa-tr--sn"><td></td><td colspan="3">' +
+              '<div class="wa-card__sns">' +
+              i.serials.map(escapeHtml).join(" · ") + "</div></td></tr>"
+            : "";
+        return '<tr><td class="n">' + (idx + 1) + "</td><td>" +
+          escapeHtml(i.name) + '</td><td class="n">' + escapeHtml(i.qty) +
+          '</td><td class="n">' + escapeHtml(i.note || "") + "</td></tr>" +
+          snHtml;
+      }).join("");
+      var pfoot;
+      if (pa.status === "pending") {
+        pfoot =
+          '<div class="wa-card__foot">' + escapeHtml(pa.detail || "") +
+          (pa.detail && pa.total ? " · " : "") +
+          (pa.total ? "<b>" + escapeHtml(pa.total) + "</b>" : "") + "</div>" +
+          '<div class="wa-card__foot">Pending confirmation' +
+          (pa.requested_by ? " · requested by " +
+            escapeHtml(pa.requested_by) : "") +
+          " — a member of this shop enters their staff code to complete it.</div>" +
+          '<input class="wa-card__sninput" type="password" inputmode="numeric" ' +
+          'maxlength="6" autocomplete="off" spellcheck="false" ' +
+          'placeholder="Shop member staff code" data-pacode="' + msgId + '">' +
+          '<div class="wa-card__actions">' +
+          '<button type="button" class="wa-card__btn wa-card__btn--ok" ' +
+          'data-paconfirm="' + msgId + '">Confirm</button></div>' +
+          '<div class="wa-card__err" data-paerr="' + msgId + '" hidden></div>';
+      } else {
+        pfoot = '<div class="wa-card__foot is-in">' +
+          escapeHtml(pa.status || "") + "</div>";
+      }
+      return '<div class="wa-card"><div class="wa-card__head ' +
+        'wa-card__head--in"><i data-lucide="hourglass"></i><span>' +
+        escapeHtml(pa.title || "Request") +
+        " — pending confirmation</span></div>" +
+        '<div class="wa-card__tablewrap"><table class="wa-table"><thead><tr>' +
+        "<th>#</th><th>Item</th><th class=\"n\">Qty</th><th class=\"n\"></th>" +
+        "</tr></thead><tbody>" + prows + "</tbody></table></div>" +
+        pfoot + "</div>";
+    }
     return "";
   }
 
@@ -608,8 +698,12 @@
     var inner;
     if (m.meta && (m.meta.transfer || m.meta.stock_in || m.meta.items_sold ||
         m.meta.sales || m.meta.summary || m.meta.credits || m.meta.expenses ||
-        m.meta.movement || m.meta.sale)) {
-      inner = cardHtml(m.meta, m.mine);
+        m.meta.movement || m.meta.sale || m.meta.pending_action)) {
+      inner = cardHtml(m.meta, m.mine, m.id);
+      if (m.meta.confirmed && m.meta.confirmed.by) {
+        inner += '<div class="wa-card__confirmed">✓ Confirmed by ' +
+          escapeHtml(m.meta.confirmed.by) + "</div>";
+      }
     } else if (m.kind === "image" && m.image_url) {
       inner = '<img class="wa-bubble__photo" src="' + escapeHtml(m.image_url) +
         '" alt="Photo" loading="lazy">';
@@ -999,12 +1093,23 @@
       els.stockSubmitLabel.textContent = "Complete sale";
     }
     els.stockStaffCode.value = "";
-    // All actions complete by staff code — the code box replaces the send button.
     els.stockCodeBox.hidden = false;
-    els.stockSubmit.hidden = true;
-    els.stockCodeHint.textContent =
-      (mode === "transfer" ? "Transfer sends" : mode === "stockin" ? "Stock in saves" : "Sale completes") +
-      " when your code is verified";
+    var memberConfirm = me.needs_member_confirm;
+    // Staff acting on a shop they aren't allocated to send the request as
+    // "pending confirmation" — a shop member completes it with their code,
+    // on the card or right here.
+    els.stockSubmit.hidden = !memberConfirm;
+    if (memberConfirm) {
+      els.stockSubmitLabel.textContent = "Send for confirmation";
+    }
+    els.stockStaffCode.placeholder = memberConfirm
+      ? "Member's staff code (optional)"
+      : "Enter staff code to complete";
+    els.stockCodeHint.textContent = memberConfirm
+      ? "Sends as pending — a member of this shop confirms it with their " +
+        "code, or enter their code here to complete it now"
+      : (mode === "transfer" ? "Transfer sends" : mode === "stockin" ? "Stock in saves" : "Sale completes") +
+        " when your code is verified";
     els.stockEmpty.textContent =
       mode === "transfer"
         ? "Add the items you are sending."
@@ -1448,19 +1553,20 @@
           return;
         }
         closeStock();
-        if (mode === "transfer") {
-          if (resp.message && resp.conversation_id === state.activeId) {
-            appendIfNew(resp.message);
-          }
+        if (resp.message && resp.conversation_id === state.activeId) {
+          appendIfNew(resp.message);
+        }
+        if (resp.pending) {
+          showToast("Sent — pending a shop member's confirmation " +
+            "(see your Assistant chat).");
+        } else if (mode === "transfer") {
           showToast("Transfer sent — the shop is being notified.");
-          pollNow();
         } else if (mode === "sale") {
           showToast("Sale " + (resp.receipt || "") + " recorded — see your Assistant chat.");
-          pollNow();
         } else {
           showToast("Stock in saved. See it in your Assistant chat.");
-          pollNow();
         }
+        pollNow();
       })
       .catch(function () {
         stockError("Network error — check your connection and retry.");
@@ -1805,34 +1911,98 @@
 
   els.stockSubmit.addEventListener("click", submitStock);
 
+  // ------------------------------------------------------------------
+  // Bot period picker — Day / Period / Month / Year from the calendar
+  // ------------------------------------------------------------------
+
+  var MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  function todayISO() {
+    var n = new Date();
+    var m = n.getMonth() + 1, d = n.getDate();
+    return n.getFullYear() + "-" + (m < 10 ? "0" : "") + m +
+           "-" + (d < 10 ? "0" : "") + d;
+  }
+
+  function isoToText(iso) {
+    // "2026-10-31" → "31 Oct 2026" — the assistant parses D Mon YYYY.
+    var p = iso.split("-");
+    return parseInt(p[2], 10) + " " +
+           MONTHS_SHORT[parseInt(p[1], 10) - 1] + " " + p[0];
+  }
+
+  function buildYearOptions() {
+    var y = new Date().getFullYear();
+    var opts = "";
+    for (var i = y; i >= y - 9; i--) {
+      opts += '<option value="' + i + '">' + i + "</option>";
+    }
+    els.yearSel.innerHTML = opts;
+  }
+
+  function setPeriodMode(mode) {
+    state.periodMode = mode;
+    els.period.querySelectorAll("[data-period-mode]").forEach(function (b) {
+      b.classList.toggle("is-on", b.dataset.periodMode === mode);
+    });
+    els.dateDay.hidden = mode !== "day";
+    els.dateFrom.hidden = els.dateTo.hidden = mode !== "period";
+    els.monthSel.hidden = mode !== "month";
+    els.yearSel.hidden = mode !== "month" && mode !== "year";
+  }
+
+  function openPeriodPicker(topic) {
+    var now = new Date();
+    state.botTopic = topic;
+    els.periodTopic.textContent = topic;
+    els.dateDay.value = todayISO();
+    els.dateFrom.value = "";
+    els.dateTo.value = "";
+    els.monthSel.value = String(now.getMonth() + 1);
+    els.yearSel.value = String(now.getFullYear());
+    setPeriodMode("day");
+    els.period.hidden = false;
+    refreshIcons();
+  }
+
   els.suggestionsBar.addEventListener("click", function (e) {
     var chip = e.target.closest("[data-suggest]");
     if (!chip) return;
-    // Tap a topic chip → period bar (today / yesterday / week / month /
-    // calendar day or range). The picked period sends e.g. "sales this week".
+    // Tap a topic chip → period bar (single day / period / month / year
+    // picked from the calendar). Go sends e.g. "sales 1 Jan 2025 to 31 Dec 2025".
     var topic = chip.dataset.suggest.replace(/\s*\(.*?\)\s*/g, "").trim();
-    state.botTopic = topic;
-    els.periodTopic.textContent = chip.dataset.suggest.replace(/\s*\(.*?\)\s*/g, "");
-    els.period.hidden = false;
-    refreshIcons();
+    openPeriodPicker(topic);
   });
 
   els.period.addEventListener("click", function (e) {
-    var btn = e.target.closest("[data-period]");
-    if (!btn) return;
-    sendText(state.botTopic + " " + btn.dataset.period);
-    els.period.hidden = true;
+    var btn = e.target.closest("[data-period-mode]");
+    if (btn) setPeriodMode(btn.dataset.periodMode);
   });
 
   function sendPeriodRange() {
-    var from = els.dateFrom.value, to = els.dateTo.value;
-    if (!from && !to) return;
-    var text;
-    if (from && to) {
-      text = state.botTopic + " " + from + " to " + to;
-    } else {
-      text = state.botTopic + " " + (from || to);
+    var text = null;
+    var mode = state.periodMode;
+    if (mode === "day") {
+      if (!els.dateDay.value) return;
+      text = state.botTopic + " " + isoToText(els.dateDay.value);
+    } else if (mode === "period") {
+      var from = els.dateFrom.value, to = els.dateTo.value;
+      if (!from && !to) return;
+      if (from && to && to < from) { var tmp = from; from = to; to = tmp; }
+      text = state.botTopic + " " + isoToText(from || to);
+      if (from && to && from !== to) text += " to " + isoToText(to);
+    } else if (mode === "month") {
+      var y = parseInt(els.yearSel.value, 10);
+      var m = parseInt(els.monthSel.value, 10);
+      var last = new Date(y, m, 0).getDate();
+      text = state.botTopic + " 1 " + MONTHS_SHORT[m - 1] + " " + y +
+             " to " + last + " " + MONTHS_SHORT[m - 1] + " " + y;
+    } else if (mode === "year") {
+      text = state.botTopic + " 1 Jan " + parseInt(els.yearSel.value, 10) +
+             " to 31 Dec " + parseInt(els.yearSel.value, 10);
     }
+    if (!text) return;
     els.dateFrom.value = "";
     els.dateTo.value = "";
     sendText(text);
@@ -1845,6 +2015,44 @@
   });
 
   els.loadMore.addEventListener("click", loadOlder);
+
+  function confirmPending(msgId) {
+    var inp = root.querySelector('[data-pacode="' + msgId + '"]');
+    var code = inp ? inp.value.trim() : "";
+    post(urlFor(URLS.pendingConfirm, msgId), { staff_code: code })
+      .then(function (resp) {
+        var err = root.querySelector('[data-paerr="' + msgId + '"]');
+        if (!resp.ok) {
+          if (err) {
+            err.textContent = resp.error || "Could not confirm.";
+            err.hidden = false;
+          }
+          if (inp) { inp.focus(); inp.select(); }
+          return;
+        }
+        // The card becomes the real receipt/movement card in place.
+        for (var i = 0; i < state.messages.length; i++) {
+          if (state.messages[i].id === resp.message.id) {
+            state.messages[i] = resp.message;
+            break;
+          }
+        }
+        renderStage();
+        if (resp.card && resp.card_conversation_id === state.activeId) {
+          appendIfNew(resp.card);
+        }
+        scrollBottom(true);
+        showToast("Confirmed — the transaction went through.");
+        pollNow();
+      })
+      .catch(function () {
+        var err = root.querySelector('[data-paerr="' + msgId + '"]');
+        if (err) {
+          err.textContent = "Network error — try again.";
+          err.hidden = false;
+        }
+      });
+  }
 
   function respondTransfer(movementId, decision) {
     var payload = { decision: decision };
@@ -1891,8 +2099,15 @@
   }
 
   els.stage.addEventListener("keydown", function (e) {
+    if (e.key !== "Enter") return;
+    var paInp = e.target.closest("[data-pacode]");
+    if (paInp) {
+      e.preventDefault();
+      confirmPending(paInp.dataset.pacode);
+      return;
+    }
     var inp = e.target.closest("[data-rcvsn]");
-    if (!inp || e.key !== "Enter") return;
+    if (!inp) return;
     e.preventDefault();
     var parts = inp.dataset.rcvsn.split(":");
     var movId = parts[0], lineId = parts[1];
@@ -1973,6 +2188,20 @@
     var sendDec = e.target.closest("[data-tsenddecline]");
     if (sendDec) {
       respondTransfer(sendDec.dataset.tsenddecline, "decline");
+      return;
+    }
+
+    var paConfirm = e.target.closest("[data-paconfirm]");
+    if (paConfirm) {
+      confirmPending(paConfirm.dataset.paconfirm);
+    }
+  });
+
+  // Staff code entry on a pending card: Enter or the 6th digit confirms.
+  els.stage.addEventListener("input", function (e) {
+    var inp = e.target.closest("[data-pacode]");
+    if (inp && inp.value.trim().length === 6) {
+      confirmPending(inp.dataset.pacode);
     }
   });
 
@@ -1990,14 +2219,43 @@
     if (!document.hidden) pollNow();
   });
 
+  // Keep the app exactly as tall as the visible viewport so bottom
+  // controls (FABs, composer) never slip under the mobile URL bar or
+  // the on-screen keyboard.
+  function syncViewportHeight() {
+    var h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    if (h) root.style.setProperty("--wa-vvh", Math.round(h) + "px");
+  }
+
+  syncViewportHeight();
+  window.addEventListener("resize", syncViewportHeight);
+  window.addEventListener("orientationchange", syncViewportHeight);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", syncViewportHeight);
+  }
+
   // ------------------------------------------------------------------
   // Boot
   // ------------------------------------------------------------------
 
   buildEmojiPop();
   buildSuggestions();
+  buildYearOptions();
   renderChatList();
   paintTheme();
   refreshIcons();
   schedule();
+
+  // Deep link from the all-shops page: /chat/?fab=sale|stockin|transfer
+  // opens that stock panel immediately.
+  var fabParam = "";
+  try {
+    fabParam = new URLSearchParams(window.location.search).get("fab") || "";
+  } catch (e) {}
+  if (fabParam === "sale" || fabParam === "stockin" || fabParam === "transfer") {
+    openStock(fabParam);
+    try {
+      window.history.replaceState(null, "", window.location.pathname);
+    } catch (e) {}
+  }
 })();

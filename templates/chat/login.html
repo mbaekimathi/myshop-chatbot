@@ -42,18 +42,6 @@
         <p>Use your shop's shared 6-digit code and password.</p>
       </header>
 
-      <div class="install-card" data-install-card hidden>
-        <span class="install-card__icon" aria-hidden="true"><i data-lucide="smartphone"></i></span>
-        <div class="install-card__body">
-          <b>Get the app</b>
-          <small data-install-hint>Install MY-SHOP Chat for one-tap access.</small>
-        </div>
-        <button type="button" class="btn install-card__btn" data-install-btn>
-          <i data-lucide="download" aria-hidden="true"></i>
-          <span>Install</span>
-        </button>
-      </div>
-
       <div class="auth-tabs" role="tablist">
         <button type="button" class="auth-tab{% if mode != "employee" %} is-active{% endif %}" data-auth-tab="shop" role="tab">
           <i data-lucide="store" aria-hidden="true"></i><span>Shop</span>
@@ -182,6 +170,21 @@
     </div>
   </main>
 </div>
+
+<div class="install-toast" data-install-toast role="status" hidden>
+  <span class="install-toast__icon" aria-hidden="true"><i data-lucide="smartphone"></i></span>
+  <div class="install-toast__body">
+    <b>Get the app</b>
+    <small data-install-hint>Install {{ company_name|default:"MY-SHOP" }} Chat for one-tap access.</small>
+  </div>
+  <button type="button" class="btn install-toast__btn" data-install-btn>
+    <i data-lucide="download" aria-hidden="true"></i>
+    <span>Install</span>
+  </button>
+  <button type="button" class="install-toast__close" data-install-close aria-label="Dismiss install prompt">
+    <i data-lucide="x" aria-hidden="true"></i>
+  </button>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -221,39 +224,64 @@
       });
     }
 
-    // PWA install — show the card when the browser can install, or always on
-    // mobile so the user gets Add-to-Home-Screen instructions.
-    var installCard = document.querySelector("[data-install-card]");
+    // PWA install toast — floats over the page like a notification instead
+    // of sitting inside the form. Shown when the browser can install, or on
+    // mobile for manual Add-to-Home-Screen instructions. Dismissed once per
+    // session.
+    var installToast = document.querySelector("[data-install-toast]");
     var installBtn = document.querySelector("[data-install-btn]");
+    var installClose = document.querySelector("[data-install-close]");
     var installHint = document.querySelector("[data-install-hint]");
     var deferredPrompt = null;
 
-    if (installCard) {
-      // Already installed → running standalone → never show the card.
+    if (installToast) {
+      // Already installed → running standalone → never show the toast.
       var installed =
         window.matchMedia("(display-mode: standalone)").matches ||
         window.matchMedia("(display-mode: fullscreen)").matches ||
         window.navigator.standalone === true ||           // iOS
         (document.referrer || "").indexOf("android-app://") === 0;
-      installCard.hidden = installed;
 
-      window.addEventListener("beforeinstallprompt", function (e) {
-        e.preventDefault();
-        deferredPrompt = e;
-        if (!installed) installCard.hidden = false;
-      });
+      var dismissed = false;
+      try { dismissed = sessionStorage.getItem("myshop-install-dismissed") === "1"; } catch (e) {}
+
+      var isMobile =
+        window.matchMedia("(pointer: coarse)").matches ||
+        /android|iphone|ipad|ipod/i.test(navigator.userAgent);
+
+      function showInstallToast() {
+        if (!installed && !dismissed) installToast.hidden = false;
+      }
+
+      if (!installed && !dismissed) {
+        // Mobile browsers without a programmatic prompt still get manual
+        // Add-to-Home-Screen instructions; desktop waits for the event.
+        if (isMobile) setTimeout(showInstallToast, 1800);
+        window.addEventListener("beforeinstallprompt", function (e) {
+          e.preventDefault();
+          deferredPrompt = e;
+          setTimeout(showInstallToast, 1200);
+        });
+      }
       window.addEventListener("appinstalled", function () {
-        installCard.hidden = true;
+        installToast.hidden = true;
       });
       if (installBtn) {
         installBtn.addEventListener("click", function () {
           if (deferredPrompt) {
             deferredPrompt.prompt();
             deferredPrompt = null;
-          } else {
+          } else if (installHint) {
             installHint.textContent =
               "Tap your browser menu (⋮ / Share) → 'Add to Home Screen'.";
           }
+        });
+      }
+      if (installClose) {
+        installClose.addEventListener("click", function () {
+          installToast.hidden = true;
+          dismissed = true;
+          try { sessionStorage.setItem("myshop-install-dismissed", "1"); } catch (e) {}
         });
       }
       // Auto-update: check for a new service worker on every load so a

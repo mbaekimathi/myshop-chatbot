@@ -17,6 +17,7 @@
   data-transfer-base="{% url 'chat:api_transfer' conversation_id=0 %}"
   data-transfers-url="{% url 'chat:api_transfers' %}"
   data-respond-base="{% url 'chat:api_transfer_respond' movement_id=0 %}"
+  data-pending-base="{% url 'chat:api_pending_confirm' message_id=0 %}"
   data-stockin-url="{% url 'chat:api_stock_in' %}"
   data-sale-url="{% url 'chat:api_sale' %}"
   data-item-search-url="{% url 'chat:api_item_search' %}"
@@ -29,7 +30,7 @@
   <script type="application/json" id="chat-init-conversations">{{ conversations_json|safe }}</script>
   <script type="application/json" id="chat-init-contacts">{{ contacts_json|safe }}</script>
   <script type="application/json" id="chat-init-suggestions">{{ suggestions_json|safe }}</script>
-  <script type="application/json" id="chat-init-me">{"id": {{ me.id }}, "name": "{{ me.name|escapejs }}", "code": "{{ me.code }}", "location": "{{ me.location|escapejs }}", "initials": "{{ me.initials }}", "tone": {{ me.tone }}}</script>
+  <script type="application/json" id="chat-init-me">{"id": {{ me.id }}, "name": "{{ me.name|escapejs }}", "code": "{{ me.code }}", "location": "{{ me.location|escapejs }}", "initials": "{{ me.initials }}", "tone": {{ me.tone }}, "needs_member_confirm": {{ me.needs_member_confirm|yesno:"true,false" }}}</script>
 
   <header class="wa-app__bar">
     <div class="wa-app__brand">
@@ -40,6 +41,11 @@
       </div>
     </div>
     <div class="wa-app__bar-actions">
+      {% if me.staff_view %}
+      <a class="comms-icon-btn" href="{% url 'chat:all_shops' %}" title="All shops" aria-label="All shops">
+        <i data-lucide="layers" aria-hidden="true"></i>
+      </a>
+      {% endif %}
       <button type="button" class="comms-icon-btn" data-theme-toggle title="Toggle theme" aria-label="Toggle theme">
         <i data-lucide="moon" aria-hidden="true" data-icon-dark></i>
         <i data-lucide="sun" aria-hidden="true" data-icon-light></i>
@@ -106,13 +112,32 @@
         <div class="wa-suggestions" data-wa-suggestions hidden></div>
         <div class="wa-period" data-wa-period hidden>
           <span class="wa-period__topic" data-wa-period-topic></span>
-          <button type="button" class="wa-period__btn" data-period="today">Today</button>
-          <button type="button" class="wa-period__btn" data-period="yesterday">Yesterday</button>
-          <button type="button" class="wa-period__btn" data-period="this week">Week</button>
-          <button type="button" class="wa-period__btn" data-period="this month">Month</button>
-          <span class="wa-period__sep"></span>
-          <input type="date" data-wa-date-from aria-label="From date" title="From">
-          <input type="date" data-wa-date-to aria-label="To date" title="To">
+          <span class="wa-period__modes" role="group" aria-label="Period type">
+            <button type="button" class="wa-period__btn is-on" data-period-mode="day">Day</button>
+            <button type="button" class="wa-period__btn" data-period-mode="period">Period</button>
+            <button type="button" class="wa-period__btn" data-period-mode="month">Month</button>
+            <button type="button" class="wa-period__btn" data-period-mode="year">Year</button>
+          </span>
+          <span class="wa-period__fields">
+            <input type="date" data-wa-date-day aria-label="Pick a day" title="Day">
+            <input type="date" data-wa-date-from aria-label="From date" title="From" hidden>
+            <input type="date" data-wa-date-to aria-label="To date" title="To" hidden>
+            <select data-wa-month aria-label="Month" title="Month" hidden>
+              <option value="1">January</option>
+              <option value="2">February</option>
+              <option value="3">March</option>
+              <option value="4">April</option>
+              <option value="5">May</option>
+              <option value="6">June</option>
+              <option value="7">July</option>
+              <option value="8">August</option>
+              <option value="9">September</option>
+              <option value="10">October</option>
+              <option value="11">November</option>
+              <option value="12">December</option>
+            </select>
+            <select data-wa-year aria-label="Year" title="Year" hidden></select>
+          </span>
           <button type="button" class="wa-period__btn wa-period__btn--go" data-wa-period-go title="Apply" aria-label="Apply">
             <i data-lucide="arrow-right" aria-hidden="true"></i>
           </button>
@@ -278,5 +303,5 @@
 
 {% block extra_js %}
 <script defer src="{% static 'js/vendor/html5-qrcode.min.js' %}"></script>
-<script defer src="{% static 'js/chatbot.js' %}?v=26"></script>
+<script defer src="{% static 'js/chatbot.js' %}?v=32"></script>
 {% endblock %}

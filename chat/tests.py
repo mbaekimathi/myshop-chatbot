@@ -4,6 +4,7 @@ explicitly with schema_editor so no MySQL server is needed:
     MYSQL_ENABLED=False python manage.py test chat
 """
 
+import json
 from decimal import Decimal
 
 from django.contrib.auth.hashers import make_password
@@ -278,6 +279,231 @@ class BotTests(ChatTestCase):
     def test_fallback(self):
         reply = reply_for(self.shop_a, "xyzzy plover")
         self.assertIn("help", reply.lower())
+
+
+class PendingConfirmTests(ChatTestCase):
+    """Staff acting on a shop they aren't allocated to send requests as a
+    pending-confirmation card; a shop member's staff code executes it."""
+
+    EMPLOYEE_DDL = (
+        "CREATE TABLE IF NOT EXISTS employees_employeeprofile ("
+        "id INTEGER PRIMARY KEY, employee_id VARCHAR(12) NOT NULL, "
+        "user_id BIGINT, role VARCHAR(32) NOT NULL, "
+        "status VARCHAR(16) NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS "
+        "employees_employeeprofile_assigned_shops ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "employeeprofile_id BIGINT NOT NULL, shop_id BIGINT NOT NULL)",
+    )
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import User
+
+        with connection.cursor() as cur:
+            for ddl in self.EMPLOYEE_DDL:
+                cur.execute(ddl)
+            cur.execute("DELETE FROM employees_employeeprofile")
+            cur.execute(
+                "DELETE FROM employees_employeeprofile_assigned_shops"
+            )
+        manager_user = User.objects.create_user(username="manager")
+        member_user = User.objects.create_user(
+            username="member1", first_name="Member", last_name="One"
+        )
+        with connection.cursor() as cur:
+            # Acting employee: a manager NOT allocated to shop_a.
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [1, "100001", manager_user.pk, "company_manager", "active"],
+            )
+            # Shop member: allocated to shop_a, code 654321.
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [2, "654321", member_user.pk, "shop_attendant", "active"],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile_assigned_shops "
+                "(employeeprofile_id, shop_id) VALUES (%s, %s)",
+                [2, self.shop_a.pk],
+            )
+        self.item = Item.objects.create(
+            category="Grocery", name="Sugar 1kg",
+            minimum_selling_price=Decimal("100"),
+            shop_price=Decimal("150"), stock=Decimal("40"),
+            low_stock_notify=False, low_stock_threshold=0,
+            is_suspended=False,
+        )
+        self.stock = ShopStock.objects.create(
+            shop_id=self.shop_a.pk, item_id=self.item.pk,
+            quantity=Decimal("10"), low_stock_threshold=5,
+            average_cost=Decimal("80"),
+        )
+        # Sign in as the non-member manager operating shop_a.
+        session = self.client.session
+        session["chatbot_employee_id"] = 1
+        session["chatbot_shop_id"] = self.shop_a.pk
+        session.save()
+
+    def sale_payload(self, **over):
+        data = {
+            "kind": "sale",
+            "payment_method": "cash",
+            "lines": [
+                {"item_id": self.item.pk, "quantity": "2", "serials": []}
+            ],
+        }
+        data.update(over)
+        return data
+
+    def pending_message(self):
+        for msg in Message.objects.order_by("-id"):
+            pa = (msg.meta or {}).get("pending_action") or {}
+            if pa.get("status") == "pending":
+                return msg, pa
+        return None, {}
+
+    def test_nonmember_submission_posts_pending_card(self):
+        resp = self.client.post(
+            reverse("chat:api_sale"),
+            data=json.dumps(self.sale_payload()),
+            content_type="application/json",
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["pending"])
+        # Nothing was written — the sale waits for a member's code.
+        self.assertEqual(ShopReceipt.objects.count(), 0)
+        msg, pa = self.pending_message()
+        self.assertIsNotNone(msg)
+        self.assertEqual(pa["action"], "sale")
+        self.assertIn("payload", pa)  # stored server-side
+        # …but stripped from the serialized card the client receives.
+        sent = data["message"]["meta"]["pending_action"]
+        self.assertNotIn("payload", sent)
+        self.assertEqual(sent["requested_by"], "manager")
+        self.stock.refresh_from_db()
+        self.assertEqual(self.stock.quantity, Decimal("10"))
+
+    def test_member_code_executes_immediately(self):
+        resp = self.client.post(
+            reverse("chat:api_sale"),
+            data=json.dumps(self.sale_payload(staff_code="654321")),
+            content_type="application/json",
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertNotIn("pending", data)
+        receipt = ShopReceipt.objects.get()
+        self.assertEqual(receipt.created_by_id, 2)
+
+    def test_confirm_executes_with_member_details(self):
+        resp = self.client.post(
+            reverse("chat:api_sale"),
+            data=json.dumps(self.sale_payload()),
+            content_type="application/json",
+        )
+        msg, _ = self.pending_message()
+        resp = self.client.post(
+            reverse("chat:api_pending_confirm", args=[msg.pk]),
+            data=json.dumps({"staff_code": "654321"}),
+            content_type="application/json",
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        receipt = ShopReceipt.objects.get()
+        self.assertEqual(receipt.created_by_id, 2)
+        self.assertEqual(receipt.status, "confirmed")
+        self.stock.refresh_from_db()
+        self.assertEqual(self.stock.quantity, Decimal("8"))
+        # The card becomes the real sale card, stamped with the member.
+        meta = data["message"]["meta"]
+        self.assertIn("sale", meta)
+        self.assertNotIn("pending_action", meta)
+        self.assertEqual(meta["confirmed"]["by"], "Member One")
+
+    def test_confirm_rejects_nonmember_code(self):
+        self.client.post(
+            reverse("chat:api_sale"),
+            data=json.dumps(self.sale_payload()),
+            content_type="application/json",
+        )
+        msg, _ = self.pending_message()
+        # The manager's own code is active but not a shop member.
+        resp = self.client.post(
+            reverse("chat:api_pending_confirm", args=[msg.pk]),
+            data=json.dumps({"staff_code": "100001"}),
+            content_type="application/json",
+        )
+        self.assertFalse(resp.json()["ok"])
+        self.assertEqual(ShopReceipt.objects.count(), 0)
+        msg.refresh_from_db()
+        self.assertEqual(
+            msg.meta["pending_action"]["status"], "pending"
+        )
+
+    def test_second_confirm_fails(self):
+        self.client.post(
+            reverse("chat:api_sale"),
+            data=json.dumps(self.sale_payload()),
+            content_type="application/json",
+        )
+        msg, _ = self.pending_message()
+        url = reverse("chat:api_pending_confirm", args=[msg.pk])
+        self.client.post(
+            url,
+            data=json.dumps({"staff_code": "654321"}),
+            content_type="application/json",
+        )
+        resp = self.client.post(
+            url,
+            data=json.dumps({"staff_code": "654321"}),
+            content_type="application/json",
+        )
+        self.assertFalse(resp.json()["ok"])
+        self.assertEqual(ShopReceipt.objects.count(), 1)
+
+    def test_pending_transfer_confirms_into_direct_convo(self):
+        resp = self.client.post(
+            reverse("chat:api_transfers"),
+            data=json.dumps(
+                {
+                    "destination_shop_id": self.shop_b.pk,
+                    "lines": [
+                        {
+                            "item_id": self.item.pk,
+                            "quantity": "3",
+                            "serials": [],
+                        }
+                    ],
+                }
+            ),
+            content_type="application/json",
+        )
+        self.assertTrue(resp.json()["pending"])
+        self.assertEqual(StockMovement.objects.count(), 0)
+        msg, pa = self.pending_message()
+        self.assertEqual(pa["action"], "transfer")
+
+        resp = self.client.post(
+            reverse("chat:api_pending_confirm", args=[msg.pk]),
+            data=json.dumps({"staff_code": "654321"}),
+            content_type="application/json",
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        movement = StockMovement.objects.get()
+        self.assertEqual(movement.request_status, "pending")
+        self.assertEqual(movement.created_by_id, 2)
+        self.assertEqual(movement.requested_from_shop_id, self.shop_b.pk)
+        # The real transfer card was posted into the direct conversation.
+        card_msg = Message.objects.get(client_tag=f"transfer:{movement.pk}")
+        self.assertEqual(card_msg.meta["transfer"]["status"], "pending")
+        self.assertEqual(data["card_conversation_id"], card_msg.conversation_id)
 
 
 class ViewSmokeTests(ChatTestCase):

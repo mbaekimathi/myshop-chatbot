@@ -487,8 +487,8 @@ def _fallback_reply() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _stock_movement_rows(shop: Shop, text: str):
-    """(label, rows) — movement line dicts shared by text + card."""
+def _stock_movement_groups(shop: Shop, text: str):
+    """(label, groups) — each movement with its own lines, for the card."""
     start, end, label = _date_range(text)
     start_dt, end_dt = _window(start, end)
     movements = list(
@@ -514,30 +514,50 @@ def _stock_movement_rows(shop: Shop, text: str):
             ]
         )
     }
-    rows = []
+    groups = []
     for m in movements:
-        for l in line_map.get(m.pk, []):
-            if m.movement_type == "in":
-                head, kind = "Stock in", "in"
-            elif m.movement_type == "out":
-                head, kind = "Stock out", "out"
-            elif m.shop_id == shop.pk:
-                head, kind = (
-                    f"To {shop_names.get(m.requested_from_shop_id, '?')}",
-                    "tout",
-                )
-            else:
-                head, kind = (
-                    f"From {shop_names.get(m.shop_id, '?')}",
-                    "tin",
-                )
+        if m.movement_type == "in":
+            head, kind = "Stock in", "in"
+        elif m.movement_type == "out":
+            head, kind = "Stock out", "out"
+        elif m.shop_id == shop.pk:
+            head, kind = (
+                f"To {shop_names.get(m.requested_from_shop_id, '?')}",
+                "tout",
+            )
+        else:
+            head, kind = (
+                f"From {shop_names.get(m.shop_id, '?')}",
+                "tin",
+            )
+        groups.append(
+            {
+                "kind": kind,
+                "head": head,
+                "status": m.request_status if m.movement_type == "request" else "",
+                "when": timezone.localtime(m.created_at).strftime("%d %b, %H:%M"),
+                "items": [
+                    {"item": l.item_name, "qty": qty_fmt(l.quantity)}
+                    for l in line_map.get(m.pk, [])
+                ],
+            }
+        )
+    return label, groups
+
+
+def _stock_movement_rows(shop: Shop, text: str):
+    """(label, rows) — flat movement line dicts for the text reply."""
+    label, groups = _stock_movement_groups(shop, text)
+    rows = []
+    for g in groups:
+        for it in g["items"]:
             rows.append(
                 {
-                    "kind": kind,
-                    "head": head,
-                    "item": l.item_name,
-                    "qty": qty_fmt(l.quantity),
-                    "status": m.request_status if m.movement_type == "request" else "",
+                    "kind": g["kind"],
+                    "head": g["head"],
+                    "item": it["item"],
+                    "qty": it["qty"],
+                    "status": g["status"],
                 }
             )
     return label, rows
@@ -618,6 +638,8 @@ def card_meta(shop: Shop, text: str):
                 "cash": money(agg["cash"]),
                 "mpesa": money(agg["mpesa"]),
                 "credit": money(credit),
+                "start": start.isoformat(),
+                "end": end.isoformat(),
             }
         }
 
@@ -682,10 +704,10 @@ def card_meta(shop: Shop, text: str):
         }
 
     if re.search(r"\b(stock movements?|movements?|transfers?|moved)\b", low):
-        label, rows = _stock_movement_rows(shop, t)
-        if not rows:
+        label, groups = _stock_movement_groups(shop, t)
+        if not groups:
             return None
-        return {"movement": {"label": label, "rows": rows}}
+        return {"movement": {"label": label, "groups": groups}}
 
     if re.search(r"\b(summary|report|overview|snapshot|today's|todays|performance)\b", low):
         start, end, label = _date_range(t)
@@ -851,6 +873,33 @@ def reply_for_all(text: str) -> str:
         ]
         for r in per_shop:
             lines.append(f"- {shops.get(r['shop_id'], '?')}: {money(r['t'])}")
+        lines.append(f"%%items|{start.isoformat()}|{end.isoformat()}%%")
+        return "\n".join(lines)
+
+    if items_intent_matches(None, t):
+        receipt_ids = _all_receipts(start, end).values("id")
+        rows = list(
+            ShopReceiptLine.objects.filter(receipt_id__in=receipt_ids)
+            .values("item_name")
+            .annotate(
+                q=Sum(F("quantity") - F("returned_quantity")),
+                t=Sum("line_total"),
+            )
+            .order_by("-q")
+        )
+        rows = [r for r in rows if (r["q"] or 0) > 0]
+        if not rows:
+            return f"No items sold across all shops {label}."
+        lines = [
+            f"*Items sold — ALL SHOPS ({label})* — {len(rows)} items",
+            "",
+        ]
+        for i, r in enumerate(rows[:80], 1):
+            lines.append(
+                f"{i}. {r['item_name']} — x{qty_fmt(r['q'])} ({money(r['t'])})"
+            )
+        if len(rows) > 80:
+            lines.append(f"...plus {len(rows) - 80} more items.")
         return "\n".join(lines)
 
     if re.search(r"\b(sale|sales|sell|sold|revenue|income)\b", low):
@@ -875,6 +924,7 @@ def reply_for_all(text: str) -> str:
         ]
         for r in per_shop:
             lines.append(f"- {shops.get(r['shop_id'], '?')}: {money(r['t'])}")
+        lines.append(f"%%items|{start.isoformat()}|{end.isoformat()}%%")
         return "\n".join(lines)
 
     return (
@@ -887,6 +937,217 @@ def reply_for_all(text: str) -> str:
         "- summary — company snapshot\n\n"
         "Pick a single shop from the picker for its chats and details."
     )
+
+
+def card_for_all(text: str):
+    """Structured card payload for the all-shops assistant.
+
+    Produces the same card shapes the shop assistant uses (see `card_meta`)
+    so `/all/` replies render as the same wa-card widgets — plus a shop
+    column where the company-wide list benefits from it. Mirrors the
+    intent order of `reply_for_all` exactly.
+    """
+    t = (text or "").strip()
+    low = t.lower()
+    start, end, label = _date_range(t)
+    start_dt, end_dt = _window(start, end)
+
+    def _shop_names(qs=None, field="shop_id"):
+        ids = (
+            qs.values_list(field, flat=True)
+            if qs is not None
+            else Shop.objects.filter(
+                is_suspended=False, is_hidden=False
+            ).values_list("pk", flat=True)
+        )
+        return dict(
+            Shop.objects.filter(pk__in=list(ids)).values_list("pk", "name")
+        )
+
+    if re.search(r"\b(credits?|debts?|owed|balances?)\b", low):
+        qs = (
+            ShopReceipt.objects.filter(
+                kind=CREDIT_KIND, status__in=COUNTED_STATUSES
+            )
+            .annotate(balance=F("total") - F("amount_paid"))
+            .filter(balance__gt=0)
+        )
+        if not qs.exists():
+            return None
+        names = _shop_names(qs)
+        return {
+            "credits": {
+                "total": money(qs.aggregate(t=Sum("balance"))["t"]),
+                "count": qs.count(),
+                "rows": [
+                    {
+                        "customer": r.client_name or "Walk-in customer",
+                        "shop": names.get(r.shop_id, ""),
+                        "receipt": r.receipt_number,
+                        "balance": money(r.balance),
+                        "due": (
+                            r.credit_due_date.strftime("%d %b")
+                            if r.credit_due_date
+                            else ""
+                        ),
+                    }
+                    for r in qs.order_by("-balance")[:80]
+                ],
+            }
+        }
+
+    if re.search(r"\b(expense|expenses|spent|spending|costs?)\b", low):
+        qs = Expense.objects.filter(
+            created_at__gte=start_dt, created_at__lt=end_dt
+        )
+        agg = qs.aggregate(
+            total=Sum("amount"), paid=Sum("amount_paid"), count=Count("id")
+        )
+        if not agg["count"]:
+            return None
+        names = _shop_names(qs)
+        return {
+            "expenses": {
+                "label": label,
+                "total": money(agg["total"]),
+                "count": agg["count"],
+                "paid": money(agg["paid"]),
+                "unpaid": money((agg["total"] or 0) - (agg["paid"] or 0)),
+                "rows": [
+                    {
+                        "name": e.name,
+                        "shop": names.get(e.shop_id, ""),
+                        "cat": e.category,
+                        "amount": money(e.amount),
+                        "status": e.payment_status,
+                    }
+                    for e in qs.order_by("-created_at")[:60]
+                ],
+            }
+        }
+
+    if re.search(r"\b(stock movements?|movements?|transfers?|moved)\b", low):
+        moves = list(
+            StockMovement.objects.filter(
+                created_at__range=(start_dt, end_dt)
+            ).order_by("-created_at")[:30]
+        )
+        if not moves:
+            return None
+        names = _shop_names()
+        line_map = {}
+        for l in StockMovementLine.objects.filter(
+            movement_id__in=[m.pk for m in moves]
+        ).order_by("pk"):
+            line_map.setdefault(l.movement_id, []).append(l)
+        groups = []
+        for m in moves:
+            src = names.get(m.shop_id, "?")
+            if m.movement_type == "in":
+                head, kind = f"{src} — Stock in", "in"
+            elif m.movement_type == "out":
+                head, kind = f"{src} — Stock out", "out"
+            else:
+                dst = names.get(m.requested_from_shop_id, "?")
+                head, kind = f"{src} → {dst}", "tout"
+            groups.append(
+                {
+                    "kind": kind,
+                    "head": head,
+                    "status": (
+                        m.request_status
+                        if m.movement_type == "request"
+                        else ""
+                    ),
+                    "when": timezone.localtime(m.created_at).strftime(
+                        "%d %b, %H:%M"
+                    ),
+                    "items": [
+                        {"item": l.item_name, "qty": qty_fmt(l.quantity)}
+                        for l in line_map.get(m.pk, [])
+                    ],
+                }
+            )
+        return {"movement": {"label": label, "groups": groups}}
+
+    if re.search(r"\b(summary|report|overview|snapshot|performance)\b", low):
+        sales = _all_receipts(start, end).aggregate(
+            t=Sum("total"), c=Count("id")
+        )
+        expenses = Expense.objects.filter(
+            created_at__gte=start_dt, created_at__lt=end_dt
+        ).aggregate(t=Sum("amount"))
+        credit = (
+            ShopReceipt.objects.filter(
+                kind=CREDIT_KIND, status__in=COUNTED_STATUSES
+            )
+            .annotate(balance=F("total") - F("amount_paid"))
+            .filter(balance__gt=0)
+            .aggregate(t=Sum("balance"))
+        )
+        return {
+            "summary": {
+                "label": label,
+                "sales": money(sales["t"]),
+                "receipts": sales["c"] or 0,
+                "expenses": money(expenses["t"]),
+                "credit": money(credit["t"]),
+            }
+        }
+
+    if items_intent_matches(None, t):
+        receipt_ids = _all_receipts(start, end).values("id")
+        rows = [
+            r
+            for r in (
+                ShopReceiptLine.objects.filter(receipt_id__in=receipt_ids)
+                .values("item_name")
+                .annotate(
+                    q=Sum(F("quantity") - F("returned_quantity")),
+                    t=Sum("line_total"),
+                )
+                .order_by("-q")
+            )
+            if (r["q"] or 0) > 0
+        ]
+        return {
+            "items_sold": {
+                "label": label,
+                "items": [
+                    {
+                        "name": r["item_name"],
+                        "qty": qty_fmt(r["q"]),
+                        "total": money(r["t"]),
+                    }
+                    for r in rows[:120]
+                ],
+            }
+        }
+
+    if re.search(r"\b(sale|sales|sell|sold|revenue|income)\b", low):
+        agg = _all_receipts(start, end).aggregate(
+            total=Sum("total"), count=Count("id"),
+            cash=Sum("cash_amount"), mpesa=Sum("mpesa_amount"),
+        )
+        if not (agg["count"] or 0):
+            return None
+        credit = (
+            _all_receipts(start, end, kinds=(CREDIT_KIND,))
+            .aggregate(t=Sum("total"))["t"] or 0
+        )
+        return {
+            "sales": {
+                "label": label,
+                "total": money(agg["total"]),
+                "receipts": agg["count"],
+                "cash": money(agg["cash"]),
+                "mpesa": money(agg["mpesa"]),
+                "credit": money(credit),
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+            }
+        }
+    return None
 
 
 def reply_for(shop: Shop, text: str) -> str:

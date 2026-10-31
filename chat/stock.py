@@ -22,6 +22,7 @@ from django.utils import timezone
 from .myshop_models import (
     Item,
     ItemSerial,
+    Shop,
     ShopItemPrice,
     ShopReceipt,
     ShopReceiptLine,
@@ -415,9 +416,13 @@ def _resolve_transfer_serials(item: Item, shop, line: dict):
 
 
 @transaction.atomic
-def create_transfer(me, destination, raw_lines, staff_code=""):
+def create_transfer(me, destination, raw_lines, staff_code="",
+                    require_member: bool = False, employee_id=None):
     """Returns (movement, parsed_lines)."""
-    employee_id = verify_employee_code(staff_code)
+    if employee_id is None:
+        employee_id = verify_employee_code(
+            staff_code, me, require_member=require_member
+        )
     if destination is None:
         raise StockError("Select a shop to transfer to.")
     if destination.pk == me.pk:
@@ -464,9 +469,13 @@ def create_transfer(me, destination, raw_lines, staff_code=""):
 
 @transaction.atomic
 def create_stock_in(me, raw_lines, *, supplier_name: str, supplier_phone: str,
-                    staff_code: str = ""):
+                    staff_code: str = "", require_member: bool = False,
+                    employee_id=None):
     """Returns (movement, parsed_lines)."""
-    employee_id = verify_employee_code(staff_code)
+    if employee_id is None:
+        employee_id = verify_employee_code(
+            staff_code, me, require_member=require_member
+        )
     name = (supplier_name or "").strip()
     dial, national = parse_supplier_phone(supplier_phone)
     if not name:
@@ -806,7 +815,8 @@ def respond_to_transfer(me, movement_id, decision, received, reason="",
 # ---------------------------------------------------------------------------
 
 
-def transfer_card(movement: StockMovement, sender, receiver, movement_lines) -> dict:
+def transfer_card(movement: StockMovement, sender, receiver, movement_lines,
+                  readonly: bool = False) -> dict:
     return {
         "transfer": {
             "movement_id": movement.pk,
@@ -815,6 +825,7 @@ def transfer_card(movement: StockMovement, sender, receiver, movement_lines) -> 
             "to_shop": receiver.name,
             "from_shop_id": sender.pk,
             "to_shop_id": receiver.pk,
+            "readonly": readonly,
             "items": [
                 {
                     "line_id": l.pk,
@@ -871,14 +882,88 @@ def _employee_row(employee_id):
     return row[0] if row else None
 
 
-def verify_employee_code(code: str) -> int:
+def _employee_allocated(emp_pk: int, shop_id: int) -> bool:
+    """True when the employee is assigned to this shop (shop member)."""
+    from django.db import connection
+
+    with connection.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM employees_employeeprofile_assigned_shops "
+            "WHERE employeeprofile_id=%s AND shop_id=%s LIMIT 1",
+            [emp_pk, shop_id],
+        )
+        return cur.fetchone() is not None
+
+
+def verify_employee_code(code: str, shop=None, require_member: bool = False) -> int:
+    """Resolve a 6-digit staff code to an active employee profile pk.
+
+    With `require_member`, the code must belong to a staff member allocated
+    to `shop` — used when the acting user isn't a member of the shop and a
+    shop member has to confirm the action.
+    """
     code = (code or "").strip()
     if not code:
+        if require_member:
+            raise StockError(
+                "Ask a member of this shop to enter their 6-digit staff code."
+            )
         raise StockError("Enter your 6-digit staff code to complete.")
     emp_id = _employee_row(code)
     if emp_id is None:
         raise StockError("That staff code is not an active employee.")
+    if (
+        require_member
+        and shop is not None
+        and not _employee_allocated(emp_id, shop.pk)
+    ):
+        raise StockError(
+            "Only a member of this shop can confirm — "
+            "ask a shop staff member to enter their code."
+        )
     return emp_id
+
+
+def member_employee_id(code: str, shop) -> int | None:
+    """Active employee pk when `code` belongs to a member of `shop`."""
+    code = (code or "").strip()
+    if not code or shop is None:
+        return None
+    emp_id = _employee_row(code)
+    if emp_id is None or not _employee_allocated(emp_id, shop.pk):
+        return None
+    return emp_id
+
+
+def employee_label(emp_pk) -> str:
+    """Display name for an employee profile, used in card footers."""
+    if not emp_pk:
+        return ""
+    from django.db import connection
+
+    with connection.cursor() as cur:
+        cur.execute(
+            "SELECT u.first_name, u.last_name, u.username "
+            "FROM employees_employeeprofile ep "
+            "JOIN auth_user u ON u.id = ep.user_id "
+            "WHERE ep.id=%s LIMIT 1",
+            [emp_pk],
+        )
+        row = cur.fetchone()
+    if row is None:
+        return ""
+    name = " ".join(p for p in (row[0] or "", row[1] or "") if p).strip()
+    return name or (row[2] or "")
+
+
+def _destination_shop(shop_id):
+    """Active, visible destination shop or None — like services.shop_by_id."""
+    try:
+        return Shop.objects.get(
+            pk=shop_id, is_suspended=False, is_hidden=False
+        )
+    except (Shop.DoesNotExist, ValueError, TypeError):
+        return None
 
 
 def _next_receipt_number(shop, prefix="S"):
@@ -906,11 +991,15 @@ KIND_PREFIX = {"sale": "S", "credit": "C", "quotation": "Q"}
 @transaction.atomic
 def create_sale(me, raw_lines, *, payment_method, cash_amount=None,
                 mpesa_amount=None, client_name="", client_phone="",
-                kind="sale", credit_due_date=None, staff_code=""):
+                kind="sale", credit_due_date=None, staff_code="",
+                require_member: bool = False, employee_id=None):
     """Returns (receipt, prepared_lines). kind ∈ sale|credit|quotation."""
     if kind not in KIND_PREFIX:
         raise StockError("Choose sale, credit, or quotation.")
-    employee_id = verify_employee_code(staff_code)
+    if employee_id is None:
+        employee_id = verify_employee_code(
+            staff_code, me, require_member=require_member
+        )
 
     # Credit + quotation need client info — same rule as MY-SHOP checkout.
     client_ok = (client_name or "").strip() or (client_phone or "").strip()
@@ -1071,3 +1160,264 @@ def sale_card(receipt, lines, total) -> dict:
             ],
         }
     }
+
+
+# ---------------------------------------------------------------------------
+# Pending member confirmation
+#
+# Staff acting on a shop they aren't allocated to can send a request instead
+# of being blocked: the validated payload is stored on a card message in the
+# shop's Assistant thread. A member of the shop then enters their staff code
+# and the action executes under that member's employee id.
+# ---------------------------------------------------------------------------
+
+
+def _line_summary(lines) -> str:
+    return ", ".join(
+        f"{l['quantity']}× {l['item'].name}" for l in lines
+    )
+
+
+def _run_action(action: str, me, payload: dict, employee_id):
+    """Execute one stored request — returns a result dict for card building."""
+    payload = payload or {}
+    if action == "transfer":
+        destination = _destination_shop(payload.get("destination_shop_id"))
+        movement, lines = create_transfer(
+            me, destination, payload.get("lines") or [],
+            employee_id=employee_id,
+        )
+        return {
+            "action": action,
+            "movement": movement,
+            "movement_lines": list(
+                StockMovementLine.objects.filter(
+                    movement_id=movement.pk
+                ).order_by("pk")
+            ),
+            "lines": lines,
+            "destination": destination,
+        }
+    if action == "stockin":
+        supplier_name = (payload.get("supplier_name") or "").strip().upper()
+        movement, lines = create_stock_in(
+            me,
+            payload.get("lines") or [],
+            supplier_name=supplier_name,
+            supplier_phone=payload.get("supplier_phone") or "",
+            employee_id=employee_id,
+        )
+        dial, national = parse_supplier_phone(
+            payload.get("supplier_phone") or ""
+        )
+        return {
+            "action": action,
+            "movement": movement,
+            "lines": lines,
+            "supplier_name": supplier_name,
+            "supplier_label": f"{supplier_name} ({dial} {national})",
+        }
+    if action == "sale":
+        due = None
+        raw_due = (payload.get("credit_due_date") or "").strip()
+        if raw_due:
+            from datetime import date
+
+            try:
+                due = date.fromisoformat(raw_due[:10])
+            except (TypeError, ValueError):
+                raise StockError("Enter a valid payment due date.")
+        receipt, lines = create_sale(
+            me,
+            payload.get("lines") or [],
+            kind=(payload.get("kind") or "sale").strip().lower(),
+            payment_method=payload.get("payment_method") or "",
+            cash_amount=payload.get("cash_amount"),
+            mpesa_amount=payload.get("mpesa_amount"),
+            client_name=payload.get("client_name") or "",
+            client_phone=payload.get("client_phone") or "",
+            credit_due_date=due,
+            employee_id=employee_id,
+        )
+        return {
+            "action": action,
+            "receipt": receipt,
+            "lines": lines,
+            "total": sum(
+                (l["line_total"] for l in lines), Decimal("0.00")
+            ).quantize(Decimal("0.01")),
+        }
+    raise StockError("Unknown request type.")
+
+
+class _PendingRollback(Exception):
+    """Unwinds the dry-run transaction, carrying the computed result."""
+
+    def __init__(self, result):
+        super().__init__()
+        self.result = result
+
+
+def _pending_display(result: dict) -> dict:
+    """Title/detail/item rows shown on a pending-confirmation card."""
+    action = result["action"]
+    if action == "transfer":
+        return {
+            "title": "Stock transfer",
+            "detail": f"To {result['destination'].name}",
+            "items": [
+                {
+                    "name": l.item_name,
+                    "qty": str(_quantize_qty(l.quantity)),
+                    "note": (
+                        f"{len(l.serial_numbers)} SN"
+                        if l.serial_numbers
+                        else ""
+                    ),
+                    "serials": list(l.serial_numbers or []),
+                }
+                for l in result["movement_lines"]
+            ],
+            "total": "",
+            "body": (
+                "Pending member confirmation — transfer to "
+                f"{result['destination'].name}: "
+                + _line_summary(result["lines"])
+            ),
+        }
+    if action == "stockin":
+        return {
+            "title": "Stock in",
+            "detail": f"From {result['supplier_label']}",
+            "items": [
+                {
+                    "name": l["item"].name,
+                    "qty": str(_quantize_qty(l["quantity"])),
+                    "note": (
+                        str(_money(l["buying_price"]))
+                        if l["buying_price"] is not None
+                        else ""
+                    ),
+                    "serials": l.get("serials") or [],
+                }
+                for l in result["lines"]
+            ],
+            "total": "",
+            "body": (
+                "Pending member confirmation — stock in: "
+                + _line_summary(result["lines"])
+                + f" — {result['supplier_name']}"
+            ),
+        }
+    receipt = result["receipt"]
+    detail = []
+    if receipt.kind == "sale":
+        detail.append(
+            {"cash": "Cash", "mpesa": "M-Pesa", "both": "Cash + M-Pesa"}.get(
+                receipt.payment_method, ""
+            )
+        )
+    if receipt.client_name:
+        detail.append(f"Client {receipt.client_name}")
+    if receipt.credit_due_date:
+        detail.append("due " + receipt.credit_due_date.strftime("%d %b %Y"))
+    total = result["total"]
+    count = len(result["lines"])
+    return {
+        "title": {
+            "sale": "New sale",
+            "credit": "Credit sale",
+            "quotation": "Quotation",
+        }.get(receipt.kind, "Sale"),
+        "detail": " · ".join(b for b in detail if b),
+        "items": [
+            {
+                "name": l["item"].name,
+                "qty": str(_quantize_qty(l["quantity"])),
+                "note": str(_money(l["price"])),
+                "serials": l.get("serials") or [],
+            }
+            for l in result["lines"]
+        ],
+        "total": f"KSh {total:,.2f}",
+        "body": (
+            f"Pending member confirmation — {receipt.kind}: {count} item"
+            f"{'s' if count != 1 else ''}, KSh {total:,.2f}"
+        ),
+    }
+
+
+def build_pending(action: str, me, payload: dict, *, requested_by: str = "",
+                  requested_by_id=None):
+    """Validate a request and build its pending-confirmation card.
+
+    The real create_* runs inside a transaction that is always rolled back,
+    so the payload is fully validated (stock, serials, prices, supplier) with
+    nothing written. The payload is stored in the card meta and executed
+    verbatim once a shop member enters their staff code.
+    """
+    try:
+        with transaction.atomic():
+            raise _PendingRollback(
+                _run_action(action, me, payload, requested_by_id or 0)
+            )
+    except _PendingRollback as done:
+        result = done.result
+    display = _pending_display(result)
+    return display["body"], {
+        "pending_action": {
+            "action": action,
+            "status": "pending",
+            "title": display["title"],
+            "requested_by": (requested_by or "").strip(),
+            "items": display["items"],
+            "detail": display["detail"],
+            "total": display["total"],
+            "payload": payload,
+        }
+    }
+
+
+def execute_pending(me, pa: dict, employee_id):
+    """Run a stored pending action under the confirming member's name.
+
+    Returns the final card meta + body plus the objects the view needs for
+    follow-ups (destination/movement/lines for a transfer).
+    """
+    action = (pa or {}).get("action") or ""
+    result = _run_action(
+        action, me, (pa or {}).get("payload") or {}, employee_id
+    )
+    if action == "transfer":
+        destination = result["destination"]
+        result["meta"] = transfer_card(
+            result["movement"],
+            me,
+            destination,
+            result["movement_lines"],
+            readonly=True,
+        )
+        result["body"] = (
+            f"Stock transfer → {destination.name}: "
+            + _line_summary(result["lines"])
+        )
+    elif action == "stockin":
+        result["meta"] = stock_in_card(
+            result["movement"], me, result["lines"], result["supplier_name"]
+        )
+        result["body"] = (
+            "Stock received: " + _line_summary(result["lines"])
+            + f" — {result['supplier_name']}"
+        )
+    else:
+        receipt = result["receipt"]
+        count = len(result["lines"])
+        result["meta"] = sale_card(
+            receipt, result["lines"], result["total"]
+        )
+        result["body"] = (
+            f"{receipt.kind.capitalize()} {receipt.receipt_number} — "
+            f"{count} item{'s' if count != 1 else ''}, "
+            f"KSh {result['total']:,.2f}"
+        )
+    return result

@@ -305,6 +305,15 @@ def serialize_message(
         ]
         meta["transfer"] = transfer
 
+    pending = meta.get("pending_action")
+    if isinstance(pending, dict) and "payload" in pending:
+        # The stored request payload is server-side — only the confirm
+        # endpoint reads it; the client just needs the display fields.
+        meta = dict(meta)
+        pending = dict(pending)
+        pending.pop("payload", None)
+        meta["pending_action"] = pending
+
     data = {
         "id": msg.pk,
         "kind": msg.kind,

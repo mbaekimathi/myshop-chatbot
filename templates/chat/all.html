@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}All shops — {{ company_name|default:"MY-SHOP" }} Chat{% endblock %}
+{% block body_class %}page-auth{% endblock %}
+
+{% block body %}
+<div class="all-shell">
+  <header class="all-head">
+    <a class="comms-icon-btn" href="{% url 'chat:pick_shop' %}" aria-label="Back to shops" title="Back to shops">
+      <i data-lucide="arrow-left"></i>
+    </a>
+    <div class="all-head__who">
+      <b>All shops — combined view</b>
+      <small>Signed in as staff ({{ employee.role|default:"employee" }})</small>
+    </div>
+    <button type="button" class="comms-icon-btn" data-theme-toggle aria-label="Toggle dark mode">
+      <i data-lucide="moon" data-icon-dark></i><i data-lucide="sun" data-icon-light></i>
+    </button>
+    <form method="post" action="{% url 'chat:logout' %}" style="display:inline">
+      {% csrf_token %}
+      <button type="submit" class="comms-icon-btn" title="Sign out" aria-label="Sign out">
+        <i data-lucide="log-out"></i>
+      </button>
+    </form>
+  </header>
+
+  <div class="all-sugs" id="allSugs">
+    <button type="button" class="wa-sug" data-sug="Sales today">Sales</button>
+    <button type="button" class="wa-sug" data-sug="Credits today">Credits</button>
+    <button type="button" class="wa-sug" data-sug="Expenses today">Expenses</button>
+    <button type="button" class="wa-sug" data-sug="Stock movement today">Stock movement</button>
+    <button type="button" class="wa-sug" data-sug="Summary today">Summary</button>
+  </div>
+
+  <main class="all-stage" id="allStage" aria-live="polite">
+    <div class="wa-bubble-row is-in"><div class="wa-bubble is-in"><p><strong>All-shops assistant</strong><br>Ask about every shop combined — sales, credits, expenses, stock movement, summary.</p></div></div>
+  </main>
+
+  <form class="all-composer" id="allForm">
+    {% csrf_token %}
+    <input type="text" id="allInput" placeholder="Ask about all shops…" autocomplete="off" autofocus>
+    <button type="submit" class="wa-send" aria-label="Send"><i data-lucide="send"></i></button>
+  </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script defer src="{% static 'js/all.js' %}?v=1"></script>
+{% endblock %}

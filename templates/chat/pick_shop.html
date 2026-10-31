@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Choose a shop — {{ company_name|default:"MY-SHOP" }} Chat{% endblock %}
+{% block body_class %}page-auth{% endblock %}
+
+{% block body %}
+<div class="auth-shell">
+  <main class="auth-main" style="grid-column: 1 / -1;">
+    <div class="auth-toolbar">
+      <button type="button" class="theme-toggle" data-theme-toggle aria-label="Toggle dark mode">
+        <i data-lucide="moon" aria-hidden="true" data-icon-dark></i>
+        <i data-lucide="sun" aria-hidden="true" data-icon-light></i>
+      </button>
+    </div>
+
+    <div class="auth-card" data-animate="rise">
+      <header class="auth-head">
+        <p class="auth-eyebrow">{{ company_name|default:"MY-SHOP" }} chat</p>
+        <h1>Choose a shop</h1>
+        <p>Signed in as staff ({{ employee.role|default:"employee" }}).</p>
+      </header>
+
+      {% if error %}
+      <div class="form-alert" role="alert">
+        <i data-lucide="alert-circle" aria-hidden="true"></i>
+        <span>{{ error }}</span>
+      </div>
+      {% endif %}
+
+      <div class="pick-shops">
+        <form method="post" action="{% url 'chat:pick_shop' %}">
+          {% csrf_token %}
+          <input type="hidden" name="shop_id" value="all">
+          <button type="submit" class="pick-shop pick-shop--all">
+            <span class="pick-shop__avatar"><i data-lucide="layers"></i></span>
+            <span class="pick-shop__meta">
+              <b>All shops</b>
+              <small>Combined view across every shop</small>
+            </span>
+            <i data-lucide="chevron-right" aria-hidden="true"></i>
+          </button>
+        </form>
+
+        {% for shop in shops %}
+        <form method="post" action="{% url 'chat:pick_shop' %}">
+          {% csrf_token %}
+          <input type="hidden" name="shop_id" value="{{ shop.pk }}">
+          <button type="submit" class="pick-shop">
+            <span class="pick-shop__avatar">{{ shop.name|slice:":2" }}</span>
+            <span class="pick-shop__meta">
+              <b>{{ shop.name }}</b>
+              <small>{{ shop.location }}</small>
+            </span>
+            <i data-lucide="chevron-right" aria-hidden="true"></i>
+          </button>
+        </form>
+        {% empty %}
+        <p class="wa-app__none">No active shops found.</p>
+        {% endfor %}
+      </div>
+
+      <form method="post" action="{% url 'chat:logout' %}" style="margin-top:0.8rem">
+        {% csrf_token %}
+        <button type="submit" class="btn btn--block" style="background:transparent;color:var(--wa-muted);border:1px solid var(--wa-line)">
+          <i data-lucide="log-out" aria-hidden="true"></i>
+          <span>Sign out</span>
+        </button>
+      </form>
+    </div>
+  </main>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    var themeBtn = document.querySelector("[data-theme-toggle]");
+    function paint() {
+      var dark = document.documentElement.getAttribute("data-theme") === "dark";
+      if (themeBtn) {
+        themeBtn.querySelector("[data-icon-dark]").hidden = dark;
+        themeBtn.querySelector("[data-icon-light]").hidden = !dark;
+      }
+    }
+    if (themeBtn) {
+      themeBtn.addEventListener("click", function () {
+        var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", next);
+        try { localStorage.setItem("myshop-theme", next); } catch (e) {}
+        paint();
+      });
+    }
+    paint();
+    if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
+  });
+</script>
+{% endblock %}

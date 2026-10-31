@@ -1,0 +1,9 @@
+.env
+.secret_key
+.production
+__pycache__/
+*.py[cod]
+.venv/
+db.sqlite3
+staticfiles/
+media/chat/

@@ -554,6 +554,13 @@ def _stock_movement_groups(shop: Shop, text: str):
                 f"From {shop_names.get(m.shop_id, '?')}",
                 "tin",
             )
+        # Incoming transfers stay blind until this shop accepts them —
+        # hide the sent quantities here too, same as the chat card.
+        blind = (
+            m.requested_from_shop_id == shop.pk
+            and bool(m.request_status)
+            and m.request_status != "fulfilled"
+        )
         groups.append(
             {
                 "kind": kind,
@@ -561,7 +568,10 @@ def _stock_movement_groups(shop: Shop, text: str):
                 "status": m.request_status if m.movement_type == "request" else "",
                 "when": timezone.localtime(m.created_at).strftime("%d %b, %H:%M"),
                 "items": [
-                    {"item": l.item_name, "qty": qty_fmt(l.quantity)}
+                    {
+                        "item": l.item_name,
+                        "qty": "?" if blind else qty_fmt(l.quantity),
+                    }
                     for l in line_map.get(m.pk, [])
                 ],
             }

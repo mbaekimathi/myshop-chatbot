@@ -20,10 +20,15 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .myshop_models import (
+    Client,
+    CompanyPosSettings,
+    Expense,
+    ExpenseSupplier,
     Item,
     ItemSerial,
     Shop,
     ShopItemPrice,
+    ShopPosSettings,
     ShopReceipt,
     ShopReceiptLine,
     ShopStock,
@@ -138,6 +143,21 @@ def upsert_supplier(*, name: str, dial: str, phone: str) -> Supplier | None:
     return supplier
 
 
+def upsert_expense_supplier(*, name: str, dial: str, phone: str) -> ExpenseSupplier | None:
+    """Expense vendor upsert — mirrors MY-SHOP's upsert_expense_supplier."""
+    name = (name or "").strip().upper()
+    dial = (dial or "").strip()
+    phone = normalize_national_phone(phone, dial)
+    if not name or not dial or not phone:
+        return None
+    supplier, _ = ExpenseSupplier.objects.update_or_create(
+        phone_country_code=dial,
+        phone_number=phone,
+        defaults={"name": name, "phone_country_iso": "KE"},
+    )
+    return supplier
+
+
 # ---------------------------------------------------------------------------
 # Lookups for live suggestions
 # ---------------------------------------------------------------------------
@@ -209,8 +229,6 @@ def serial_search(shop, item_id, query: str, limit: int = 8) -> list:
 
 def client_search(q: str, limit: int = 8):
     """Registered client suggestions by name or phone (global registry)."""
-    from .myshop_models import Client
-
     q = (q or "").strip()
     if not q:
         return []
@@ -229,12 +247,10 @@ def client_search(q: str, limit: int = 8):
 
 def upsert_client(full_name: str, phone: str):
     """Find or create a client by normalized phone — mirrors upsert_client."""
-    from .myshop_models import Client
-
     phone = (phone or "").strip()
     name = (full_name or "").strip().upper()
     if not phone and not name:
-        return
+        return None
     digits = re.sub(r"\D", "", phone)[-9:] if phone else ""
     if digits:
         c = Client.objects.filter(phone_normalized__endswith=digits).first()
@@ -242,8 +258,8 @@ def upsert_client(full_name: str, phone: str):
             if name and c.full_name != name:
                 c.full_name = name
                 c.save(update_fields=["full_name", "updated_at"])
-            return
-    Client.objects.create(
+            return c
+    return Client.objects.create(
         full_name=name or "CUSTOMER",
         phone_number=phone,
         phone_normalized=digits or phone,
@@ -966,10 +982,12 @@ def _destination_shop(shop_id):
         return None
 
 
-def _next_receipt_number(shop, prefix="S"):
+def _next_receipt_number(shop, prefix="S", kind=None):
     max_seq = 0
     for raw in ShopReceipt.objects.filter(
-        shop_id=shop.pk, kind="sale", receipt_number__istartswith=prefix
+        shop_id=shop.pk,
+        kind=kind or "sale",
+        receipt_number__istartswith=prefix,
     ).values_list("receipt_number", flat=True):
         suffix = (raw or "").strip().upper()[len(prefix):]
         if suffix.isdigit():
@@ -992,6 +1010,7 @@ KIND_PREFIX = {"sale": "S", "credit": "C", "quotation": "Q"}
 def create_sale(me, raw_lines, *, payment_method, cash_amount=None,
                 mpesa_amount=None, client_name="", client_phone="",
                 kind="sale", credit_due_date=None, staff_code="",
+                share_whatsapp: bool = False,
                 require_member: bool = False, employee_id=None):
     """Returns (receipt, prepared_lines). kind ∈ sale|credit|quotation."""
     if kind not in KIND_PREFIX:
@@ -1095,6 +1114,7 @@ def create_sale(me, raw_lines, *, payment_method, cash_amount=None,
         cash_amount=cash,
         mpesa_amount=mpesa,
         credit_due_date=credit_due_date if kind == "credit" else None,
+        share_whatsapp=share_whatsapp,
         status="confirmed",
     )
     for line in lines:
@@ -1131,15 +1151,27 @@ def create_sale(me, raw_lines, *, payment_method, cash_amount=None,
     return receipt, lines
 
 
+RECEIPT_LABEL = {
+    "sale": "Sale",
+    "credit": "Credit",
+    "quotation": "Quotation",
+    "trade_out": "Trade out",
+    "trade_in": "Trade in",
+}
+
+
+def receipt_label(kind: str) -> str:
+    return RECEIPT_LABEL.get(kind, "Receipt")
+
+
 def sale_card(receipt, lines, total) -> dict:
-    label = {"sale": "Sale", "credit": "Credit", "quotation": "Quotation"}.get(
-        receipt.kind, "Receipt"
-    )
+    label = receipt_label(receipt.kind)
     return {
         "sale": {
             "receipt": receipt.receipt_number,
             "kind": receipt.kind,
             "label": label,
+            "icon": "repeat" if receipt.kind in TRADE_KINDS else "shopping-cart",
             "total": str(total),
             "payment": receipt.payment_method,
             "client": receipt.client_name or "",
@@ -1158,6 +1190,427 @@ def sale_card(receipt, lines, total) -> dict:
                 }
                 for l in lines
             ],
+        }
+    }
+
+
+def _quotation_text(receipt, lines) -> str:
+    shop = Shop.objects.filter(pk=receipt.shop_id).first()
+    rows = [f"QUOTATION {receipt.receipt_number}"]
+    if shop and shop.name:
+        rows.append(shop.name)
+    rows.append("")
+    for l in lines:
+        rows.append(
+            f"{_quantize_qty(l['quantity'])}× {l['item'].name}"
+            f" @ {l['price']:,.2f} = {l['line_total']:,.2f}"
+        )
+    rows.append("")
+    rows.append(f"Total: KSh {receipt.total:,.2f}")
+    if receipt.client_name:
+        rows.append(f"Client: {receipt.client_name}")
+    return "\n".join(rows)
+
+
+def quotation_whatsapp_url(receipt, lines, *, share_whatsapp: bool) -> str:
+    """wa.me link prefilled with the quotation text.
+
+    Mirrors MY-SHOP's checkout share — addressed to the client's phone, or
+    the WhatsApp share picker when no phone was captured.
+    """
+    if not share_whatsapp or receipt.kind != "quotation":
+        return ""
+    from urllib.parse import quote
+
+    dial, national = parse_supplier_phone(receipt.client_phone)
+    number = dial.lstrip("+") + national if national else ""
+    text = quote(_quotation_text(receipt, lines))
+    return f"https://wa.me/{number}?text={text}"
+
+
+# ---------------------------------------------------------------------------
+# Trade — mirrors shops.services.complete_shop_checkout for the trade kinds.
+#
+# Trade out: the client takes items now and owes their value — stock and
+# serials leave like a sale, the receipt stays open until MY-SHOP settles it
+# (payment or exchange). Trade in: the client brings items — stock grows and
+# the receipt records what the shop owes them.
+# ---------------------------------------------------------------------------
+
+TRADE_KINDS = ("trade_out", "trade_in")
+
+_POS_BOOL_FIELDS = (
+    "enable_trade_out",
+    "enable_trade_in",
+    "enable_stock_tracking",
+)
+_POS_FORMAT_FIELDS = (
+    "receipt_format_trade_out",
+    "receipt_format_trade_in",
+)
+_POS_DEFAULTS = {
+    "enable_trade_out": True,
+    "enable_trade_in": True,
+    "enable_stock_tracking": True,
+    "receipt_format_trade_out": "T",
+    "receipt_format_trade_in": "TI",
+}
+
+
+def effective_pos_settings(shop) -> dict:
+    """Company POS defaults merged with the shop's overrides.
+
+    Mirrors MY-SHOP's get_effective_pos_settings for the fields the trade
+    flow uses: enable_* flags sit under the shop's `override_pos` switch and
+    the receipt number formats under `override_receipt`.
+    """
+    company = CompanyPosSettings.objects.filter(pk=1).first()
+    shop_row = ShopPosSettings.objects.filter(shop_id=shop.pk).first()
+    merged = dict(_POS_DEFAULTS)
+    if company is not None:
+        for name in merged:
+            merged[name] = getattr(company, name, merged[name])
+    if shop_row is not None:
+        if shop_row.override_pos:
+            for name in _POS_BOOL_FIELDS:
+                merged[name] = getattr(shop_row, name, merged[name])
+        if shop_row.override_receipt:
+            for name in _POS_FORMAT_FIELDS:
+                merged[name] = getattr(shop_row, name, merged[name])
+    for name in _POS_FORMAT_FIELDS:
+        merged[name] = (
+            (merged[name] or _POS_DEFAULTS[name]).strip().upper()
+            or _POS_DEFAULTS[name]
+        )
+    return merged
+
+
+def trade_flags(shop) -> dict:
+    """Which trade kinds this shop may run — drives the Trade FAB + panel."""
+    pos = effective_pos_settings(shop)
+    return {
+        "trade_out": bool(pos["enable_trade_out"]),
+        "trade_in": bool(pos["enable_trade_in"]),
+    }
+
+
+@transaction.atomic
+def create_trade(me, raw_lines, *, kind, client_name="", client_phone="",
+                 staff_code="", require_member=False, employee_id=None):
+    """Returns (receipt, prepared_lines). kind ∈ trade_out|trade_in."""
+    if kind not in TRADE_KINDS:
+        raise StockError("Choose trade out or trade in.")
+    pos = effective_pos_settings(me)
+    if not pos["enable_" + kind]:
+        raise StockError(
+            f"{receipt_label(kind)} is disabled for this shop."
+        )
+    if employee_id is None:
+        employee_id = verify_employee_code(
+            staff_code, me, require_member=require_member
+        )
+
+    client_name = (client_name or "").strip().upper()
+    client_phone = (client_phone or "").strip()
+    if not client_name:
+        raise StockError("Enter the client full name.")
+    if not client_phone:
+        raise StockError("Enter the client phone number.")
+    client = upsert_client(client_name, client_phone)
+
+    track_stock = bool(pos["enable_stock_tracking"])
+    lines = _parse_lines(
+        raw_lines, me, need_stock=kind == "trade_out" and track_stock
+    )
+
+    if kind == "trade_out":
+        price_rows = {
+            r.item_id: r
+            for r in ShopItemPrice.objects.filter(
+                shop_id=me.pk,
+                item_id__in=[l["item"].pk for l in lines],
+            )
+        }
+        for line in lines:
+            item = line["item"]
+            pr = price_rows.get(item.pk)
+            if pr is not None and not pr.is_sold:
+                raise StockError(f'"{item.name}" is not sold at {me.name}.')
+            if item.track_serial_number:
+                line["serials"] = _resolve_transfer_serials(item, me, line)
+            price = line["buying_price"]
+            if price is None or price <= 0:
+                price = _money(
+                    (pr.price if pr and pr.price else 0)
+                    or item.shop_price
+                    or item.minimum_selling_price
+                )
+            if item.minimum_selling_price and price < item.minimum_selling_price:
+                price = _money(item.minimum_selling_price)
+            unit_cost = _money(
+                line["shop_stock"].average_cost
+                if line.get("shop_stock")
+                else 0
+            )
+            if unit_cost > 0 and price < unit_cost:
+                raise StockError(
+                    f'"{item.name}" is below unit cost '
+                    f"(value {price}, cost {unit_cost})."
+                )
+            line["price"] = price
+            line["unit_cost"] = unit_cost
+            line["line_total"] = (price * line["quantity"]).quantize(
+                Decimal("0.01")
+            )
+            line["line_cogs"] = (unit_cost * line["quantity"]).quantize(
+                Decimal("0.01")
+            )
+    else:
+        serials_all = {s for line in lines for s in line["serials"]}
+        if serials_all:
+            taken = set(
+                ItemSerial.objects.filter(
+                    serial_number__in=serials_all, is_available=True
+                ).values_list("serial_number", flat=True)
+            )
+            if taken:
+                raise StockError(
+                    "Serial already in stock ("
+                    + ", ".join(sorted(taken)[:5])
+                    + ")."
+                )
+        for line in lines:
+            item = line["item"]
+            price = line["buying_price"]
+            if price is None or price <= 0:
+                raise StockError(
+                    f'Enter the amount owed for "{item.name}".'
+                )
+            line["price"] = price
+            # What the shop owes per unit becomes its cost — same as MY-SHOP.
+            line["unit_cost"] = price
+            line["line_total"] = (price * line["quantity"]).quantize(
+                Decimal("0.01")
+            )
+            line["line_cogs"] = line["line_total"]
+
+    total = sum((l["line_total"] for l in lines), Decimal("0.00")).quantize(
+        Decimal("0.01")
+    )
+    receipt = ShopReceipt.objects.create(
+        shop_id=me.pk,
+        receipt_number=_next_receipt_number(
+            me, pos["receipt_format_" + kind], kind=kind
+        ),
+        created_by_id=employee_id,
+        kind=kind,
+        payment_method="none",
+        client_id=client.pk if client else None,
+        client_name=client_name,
+        client_phone=client_phone,
+        subtotal=total,
+        tax_percent=Decimal("0"),
+        tax_amount=Decimal("0"),
+        total=total,
+        amount_paid=Decimal("0.00"),
+        cash_amount=Decimal("0.00"),
+        mpesa_amount=Decimal("0.00"),
+        status="active",
+    )
+
+    movement = None
+    if track_stock:
+        if kind == "trade_out":
+            movement_notes = f"Trade out {receipt.receipt_number}"
+        else:
+            movement_notes = f"Trade in {receipt.receipt_number} · {client_name}"
+        movement = StockMovement.objects.create(
+            movement_type="out" if kind == "trade_out" else MOVEMENT_IN,
+            entry_source=kind,
+            shop_id=me.pk,
+            request_status="",
+            created_by_id=employee_id,
+            notes=f"{movement_notes} · via MY-CHATBOT",
+        )
+
+    for line in lines:
+        item = line["item"]
+        ShopReceiptLine.objects.create(
+            receipt_id=receipt.pk,
+            item_id=item.pk,
+            item_name=item.name,
+            quantity=line["quantity"],
+            returned_quantity=Decimal("0"),
+            unit_price=line["price"],
+            unit_cost=line["unit_cost"],
+            line_total=line["line_total"],
+            line_cogs=line["line_cogs"],
+            serial_numbers=line.get("serials") or [],
+        )
+        if not track_stock:
+            continue
+        qty = _quantize_qty(line["quantity"])
+        if movement is not None:
+            StockMovementLine.objects.create(
+                movement_id=movement.pk,
+                item_id=item.pk,
+                item_name=item.name,
+                quantity=qty,
+                buying_price=(
+                    line["unit_cost"] if kind == "trade_in" else None
+                ),
+                unit_cost=line["unit_cost"],
+                reason="trade_out" if kind == "trade_out" else "",
+                note=f"{receipt_label(kind)} · {receipt.receipt_number}",
+                serial_numbers=line.get("serials") or [],
+            )
+        if kind == "trade_out":
+            stock = line["shop_stock"]
+            stock.quantity = _quantize_qty(stock.quantity) - qty
+            stock.save(update_fields=["quantity", "updated_at"])
+            item.stock = max(ZERO_QTY, _quantize_qty(item.stock) - qty)
+            item.save(update_fields=["stock"])
+            if item.track_serial_number:
+                for s in ItemSerial.objects.select_for_update().filter(
+                    item_id=item.pk,
+                    shop_id=me.pk,
+                    serial_number__in=line["serials"],
+                    is_available=True,
+                ):
+                    s.is_available = False
+                    s.save(update_fields=["is_available", "updated_at"])
+        else:
+            stock = line.get("shop_stock")
+            if stock is None:
+                stock, _ = ShopStock.objects.select_for_update().get_or_create(
+                    shop_id=me.pk,
+                    item_id=item.pk,
+                    defaults={"quantity": ZERO_QTY},
+                )
+            existing = {
+                s.serial_number: s
+                for s in ItemSerial.objects.filter(
+                    item_id=item.pk, serial_number__in=line["serials"]
+                )
+            }
+            to_create = []
+            for serial in line["serials"]:
+                row = existing.get(serial)
+                if row is None:
+                    to_create.append(
+                        ItemSerial(
+                            item_id=item.pk,
+                            shop_id=me.pk,
+                            serial_number=serial,
+                            is_available=True,
+                        )
+                    )
+                else:
+                    row.is_available = True
+                    row.shop_id = me.pk
+                    row.save(
+                        update_fields=["is_available", "shop_id", "updated_at"]
+                    )
+            if to_create:
+                ItemSerial.objects.bulk_create(to_create)
+            stock.average_cost = weighted_average_cost(
+                old_qty=stock.quantity,
+                old_avg=stock.average_cost,
+                in_qty=qty,
+                in_price=line["unit_cost"],
+            )
+            stock.quantity = _quantize_qty(stock.quantity) + qty
+            stock.save(update_fields=["quantity", "average_cost", "updated_at"])
+            item.stock = _quantize_qty(item.stock) + qty
+            item.save(update_fields=["stock"])
+    return receipt, lines
+
+
+# ---------------------------------------------------------------------------
+# Expense — mirrors shops.services.register_shop_expense.
+#
+# Supplier name + phone are required (upserted into shops_expensesupplier).
+# Paid expenses deduct the full amount from the till as cash; unpaid and
+# partial leave amount_paid at zero — same as MY-SHOP.
+# ---------------------------------------------------------------------------
+
+EXPENSE_CATEGORIES = (
+    ("rent", "Rent"),
+    ("utilities", "Utilities"),
+    ("transport", "Transport"),
+    ("salaries", "Salaries"),
+    ("packaging", "Packaging"),
+    ("maintenance", "Maintenance"),
+    ("marketing", "Marketing"),
+    ("office", "Office supplies"),
+    ("security", "Security"),
+    ("food", "Food & refreshments"),
+    ("owner_drawings", "Owner drawings"),
+    ("misc", "Miscellaneous"),
+)
+EXPENSE_CATEGORY_LABELS = dict(EXPENSE_CATEGORIES)
+EXPENSE_STATUSES = ("paid", "partial", "unpaid")
+
+
+@transaction.atomic
+def create_expense(me, *, category, name, amount, payment_status,
+                   supplier_name, supplier_phone, staff_code="",
+                   require_member=False, employee_id=None):
+    """Returns the created Expense row."""
+    if employee_id is None:
+        employee_id = verify_employee_code(
+            staff_code, me, require_member=require_member
+        )
+    category = (category or "").strip().lower()
+    if category not in EXPENSE_CATEGORY_LABELS:
+        raise StockError("Choose an expense category.")
+    name = (name or "").strip().upper()
+    if not name:
+        raise StockError("Enter the expense name.")
+    amount = _money(amount)
+    if amount <= 0:
+        raise StockError("Enter an amount greater than zero.")
+    status = (payment_status or "").strip().lower()
+    if status not in EXPENSE_STATUSES:
+        raise StockError("Choose paid, partial, or unpaid.")
+    sname = (supplier_name or "").strip()
+    dial, national = parse_supplier_phone(supplier_phone)
+    if not sname:
+        raise StockError("Enter the supplier's name.")
+    if not national:
+        raise StockError("Enter the supplier's phone number.")
+
+    supplier = upsert_expense_supplier(name=sname, dial=dial, phone=national)
+    paid = amount if status == "paid" else Decimal("0.00")
+    return Expense.objects.create(
+        shop_id=me.pk,
+        category=category,
+        name=name,
+        amount=amount,
+        amount_paid=paid,
+        cash_amount=paid,
+        mpesa_amount=Decimal("0"),
+        payment_status=status,
+        supplier_id=supplier.pk if supplier else None,
+        supplier_name=sname.upper(),
+        supplier_phone_country_code=dial,
+        supplier_phone_number=national,
+        created_by_id=employee_id,
+    )
+
+
+def expense_card(expense, shop) -> dict:
+    return {
+        "expense": {
+            "expense_id": expense.pk,
+            "shop": shop.name,
+            "name": expense.name,
+            "category": EXPENSE_CATEGORY_LABELS.get(
+                expense.category, expense.category
+            ),
+            "amount": f"{_money(expense.amount):,.2f}",
+            "status": expense.payment_status.capitalize(),
+            "supplier": expense.supplier_name,
         }
     }
 
@@ -1217,6 +1670,18 @@ def _run_action(action: str, me, payload: dict, employee_id):
             "supplier_name": supplier_name,
             "supplier_label": f"{supplier_name} ({dial} {national})",
         }
+    if action == "expense":
+        expense = create_expense(
+            me,
+            category=payload.get("category") or "",
+            name=payload.get("name") or "",
+            amount=payload.get("amount"),
+            payment_status=payload.get("payment_status") or "",
+            supplier_name=payload.get("supplier_name") or "",
+            supplier_phone=payload.get("supplier_phone") or "",
+            employee_id=employee_id,
+        )
+        return {"action": action, "expense": expense}
     if action == "sale":
         due = None
         raw_due = (payload.get("credit_due_date") or "").strip()
@@ -1227,6 +1692,7 @@ def _run_action(action: str, me, payload: dict, employee_id):
                 due = date.fromisoformat(raw_due[:10])
             except (TypeError, ValueError):
                 raise StockError("Enter a valid payment due date.")
+        share = bool(payload.get("share_whatsapp"))
         receipt, lines = create_sale(
             me,
             payload.get("lines") or [],
@@ -1237,12 +1703,34 @@ def _run_action(action: str, me, payload: dict, employee_id):
             client_name=payload.get("client_name") or "",
             client_phone=payload.get("client_phone") or "",
             credit_due_date=due,
+            share_whatsapp=share,
             employee_id=employee_id,
         )
         return {
             "action": action,
             "receipt": receipt,
             "lines": lines,
+            "whatsapp_url": quotation_whatsapp_url(
+                receipt, lines, share_whatsapp=share
+            ),
+            "total": sum(
+                (l["line_total"] for l in lines), Decimal("0.00")
+            ).quantize(Decimal("0.01")),
+        }
+    if action == "trade":
+        receipt, lines = create_trade(
+            me,
+            payload.get("lines") or [],
+            kind=(payload.get("kind") or "").strip().lower(),
+            client_name=payload.get("client_name") or "",
+            client_phone=payload.get("client_phone") or "",
+            employee_id=employee_id,
+        )
+        return {
+            "action": action,
+            "receipt": receipt,
+            "lines": lines,
+            "whatsapp_url": "",
             "total": sum(
                 (l["line_total"] for l in lines), Decimal("0.00")
             ).quantize(Decimal("0.01")),
@@ -1309,6 +1797,27 @@ def _pending_display(result: dict) -> dict:
                 + f" — {result['supplier_name']}"
             ),
         }
+    if action == "expense":
+        expense = result["expense"]
+        cat = EXPENSE_CATEGORY_LABELS.get(expense.category, expense.category)
+        return {
+            "title": "Expense",
+            "detail": f"{cat} · {expense.supplier_name}",
+            "items": [
+                {
+                    "name": expense.name,
+                    "qty": "",
+                    "note": cat,
+                    "serials": [],
+                }
+            ],
+            "total": f"KSh {_money(expense.amount):,.2f}",
+            "body": (
+                "Pending member confirmation — expense: "
+                f"{expense.name} · KSh {_money(expense.amount):,.2f}"
+                f" — {expense.supplier_name}"
+            ),
+        }
     receipt = result["receipt"]
     detail = []
     if receipt.kind == "sale":
@@ -1328,6 +1837,8 @@ def _pending_display(result: dict) -> dict:
             "sale": "New sale",
             "credit": "Credit sale",
             "quotation": "Quotation",
+            "trade_out": "Trade out",
+            "trade_in": "Trade in",
         }.get(receipt.kind, "Sale"),
         "detail": " · ".join(b for b in detail if b),
         "items": [
@@ -1341,7 +1852,8 @@ def _pending_display(result: dict) -> dict:
         ],
         "total": f"KSh {total:,.2f}",
         "body": (
-            f"Pending member confirmation — {receipt.kind}: {count} item"
+            f"Pending member confirmation — {receipt_label(receipt.kind)}: "
+            f"{count} item"
             f"{'s' if count != 1 else ''}, KSh {total:,.2f}"
         ),
     }
@@ -1409,6 +1921,13 @@ def execute_pending(me, pa: dict, employee_id):
             "Stock received: " + _line_summary(result["lines"])
             + f" — {result['supplier_name']}"
         )
+    elif action == "expense":
+        expense = result["expense"]
+        result["meta"] = expense_card(expense, me)
+        result["body"] = (
+            f"Expense {expense.name} — KSh {_money(expense.amount):,.2f}"
+            f" · {expense.payment_status} — {expense.supplier_name}"
+        )
     else:
         receipt = result["receipt"]
         count = len(result["lines"])
@@ -1416,7 +1935,7 @@ def execute_pending(me, pa: dict, employee_id):
             receipt, result["lines"], result["total"]
         )
         result["body"] = (
-            f"{receipt.kind.capitalize()} {receipt.receipt_number} — "
+            f"{receipt_label(receipt.kind)} {receipt.receipt_number} — "
             f"{count} item{'s' if count != 1 else ''}, "
             f"KSh {result['total']:,.2f}"
         )

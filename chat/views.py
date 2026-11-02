@@ -100,19 +100,37 @@ def _participants(convo: Conversation, me: Shop):
 
 def _serialize_active(convo: Conversation, me: Shop, after_id: int = 0) -> dict:
     me_part, peer = _participants(convo, me)
+    group = convo.kind == ConversationKind.GROUP
+    peers = (
+        [p for p in convo.participants.all() if p.shop_id != me.pk]
+        if group
+        else None
+    )
     qs = convo.messages.select_related().order_by("id")
     if after_id:
         qs = qs.filter(id__gt=after_id)
     msgs = list(qs[:400])
+    shops_map = services.shops_map_for([convo]) if group else {}
+    sender_names = (
+        {sid: s.name for sid, s in shops_map.items()} if group else None
+    )
     peer_shop = services.shop_by_id(peer.shop_id) if peer else None
     bot_thread = convo.kind == ConversationKind.BOT
     data = {
         "id": convo.pk,
         "kind": convo.kind,
         "messages": [
-            services.serialize_message(m, me, peer, bot_thread) for m in msgs
+            services.serialize_message(
+                m, me, peer, bot_thread,
+                peers=peers, sender_names=sender_names,
+            )
+            for m in msgs
         ],
-        "peer": services.serialize_peer(peer, peer_shop),
+        "peer": (
+            services.serialize_group_peer(convo, me, shops_map)
+            if group
+            else services.serialize_peer(peer, peer_shop)
+        ),
         "suggestions": bot_engine.BOT_SUGGESTIONS
         if convo.kind == ConversationKind.BOT
         else [],
@@ -288,7 +306,7 @@ def pick_shop(request):
     request.session.pop("chatbot_all_shops", None)
     login_shop(request, shop)
     fab = (request.POST.get("fab") or "").strip()
-    if fab in {"sale", "stockin", "transfer"}:
+    if fab in {"sale", "stockin", "transfer", "trade", "expense"}:
         return redirect(f"{reverse('chat:app')}?fab={fab}")
     return redirect("chat:app")
 
@@ -363,6 +381,7 @@ def logout_view(request):
 @shop_required
 def app_view(request):
     me = request.chat_shop
+    trade = stock_ops.trade_flags(me)
     contacts = [
         {
             "id": s.pk,
@@ -385,10 +404,14 @@ def app_view(request):
             "tone": services.avatar_tone(me.pk),
             "staff_view": current_employee(request) is not None,
             "needs_member_confirm": _needs_member_confirmation(request, me),
+            "trade_out": trade["trade_out"],
+            "trade_in": trade["trade_in"],
+            "trade_enabled": trade["trade_out"] or trade["trade_in"],
         },
         "conversations_json": json.dumps(_conversations_payload(me)),
         "contacts_json": json.dumps(contacts),
         "suggestions_json": json.dumps(bot_engine.BOT_SUGGESTIONS),
+        "expense_categories": stock_ops.EXPENSE_CATEGORIES,
     }
     return render(request, "chat/app.html", context)
 
@@ -444,6 +467,17 @@ def api_history(request, conversation_id):
     except (TypeError, ValueError):
         before_id = 0
     me_part, peer = _participants(convo, me)
+    group = convo.kind == ConversationKind.GROUP
+    peers = (
+        [p for p in convo.participants.all() if p.shop_id != me.pk]
+        if group
+        else None
+    )
+    sender_names = (
+        {sid: s.name for sid, s in services.shops_map_for([convo]).items()}
+        if group
+        else None
+    )
     qs = convo.messages.order_by("-id")
     if before_id:
         qs = qs.filter(id__lt=before_id)
@@ -457,7 +491,8 @@ def api_history(request, conversation_id):
             "has_more": has_more,
             "messages": [
                 services.serialize_message(
-                    m, me, peer, convo.kind == ConversationKind.BOT
+                    m, me, peer, convo.kind == ConversationKind.BOT,
+                    peers=peers, sender_names=sender_names,
                 )
                 for m in msgs
             ],
@@ -489,6 +524,53 @@ def api_open(request):
     me_part, _peer = _participants(convo, me)
     if me_part:
         services.touch_presence(me_part)
+    shops_map = services.shops_map_for([convo])
+    return JsonResponse(
+        {
+            "ok": True,
+            "conversation": services.serialize_conversation(convo, me, shops_map),
+            "active": _serialize_active(convo, me),
+        }
+    )
+
+
+@api_shop_required
+@require_POST
+def api_group_create(request):
+    """POST {name, members:[shop_id…]} → create + open a group thread."""
+    me = request.chat_shop
+    data = _json_body(request)
+    name = (data.get("name") or "").strip()[:80]
+    if not name:
+        return _err("Give the group a name.")
+    raw = data.get("members") or []
+    member_ids = []
+    for value in raw if isinstance(raw, list) else []:
+        try:
+            member_ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    # Dedupe and never add the creator twice.
+    member_ids = [i for i in dict.fromkeys(member_ids) if i != me.pk][:50]
+    if not member_ids:
+        return _err("Pick at least one shop to add.")
+    members = [
+        s for s in (services.shop_by_id(i) for i in member_ids) if s
+    ]
+    if not members:
+        return _err("None of those shops are available.")
+
+    convo = services.create_group(me, name, members)
+    me_part, _peer = _participants(convo, me)
+    if me_part:
+        services.touch_presence(me_part)
+        latest = (
+            convo.messages.order_by("-id")
+            .values_list("id", flat=True)
+            .first()
+            or 0
+        )
+        services.mark_read(me_part, latest)
     shops_map = services.shops_map_for([convo])
     return JsonResponse(
         {
@@ -540,13 +622,28 @@ def api_send(request, conversation_id):
         )
 
     bot_thread = convo.kind == ConversationKind.BOT
+    group = convo.kind == ConversationKind.GROUP
+    peers = (
+        [p for p in convo.participants.all() if p.shop_id != me.pk]
+        if group
+        else None
+    )
+    sender_names = (
+        {sid: s.name for sid, s in services.shops_map_for([convo]).items()}
+        if group
+        else None
+    )
     payload = {
         "ok": True,
-        "message": services.serialize_message(msg, me, peer, bot_thread),
+        "message": services.serialize_message(
+            msg, me, peer, bot_thread,
+            peers=peers, sender_names=sender_names,
+        ),
     }
     if reply_msg is not None:
         payload["reply"] = services.serialize_message(
-            reply_msg, me, peer, bot_thread
+            reply_msg, me, peer, bot_thread,
+            peers=peers, sender_names=sender_names,
         )
     return JsonResponse(payload)
 
@@ -639,7 +736,7 @@ def api_transfer(request, conversation_id):
     convo = services.get_member_conversation(conversation_id, me)
     if convo is None:
         return _err("Conversation not found.", 404)
-    if convo.kind != ConversationKind.DIRECT:
+    if convo.kind == ConversationKind.BOT:
         return _err("Transfers can only be sent in a shop chat.")
     me_part, peer = _participants(convo, me)
 
@@ -788,7 +885,13 @@ def api_transfer_respond(request, movement_id):
         "ok": True,
         "status": movement.request_status,
         "card_message_id": card_msg.pk if card_msg else None,
-        "card_meta": card_msg.meta if card_msg else None,
+        # Serialized per-viewer so a declined card keeps its quantities
+        # hidden from the receiving shop.
+        "card_meta": (
+            services.serialize_message(card_msg, me, peer)["meta"]
+            if card_msg
+            else None
+        ),
     }
     if note is not None:
         payload["message"] = services.serialize_message(note, me, peer)
@@ -835,6 +938,108 @@ def _post_pending(request, me, action: str, data: dict) -> JsonResponse:
 
 @api_shop_required
 @require_POST
+def api_quick_stockin(request, conversation_id):
+    """The `#` quick stock-in — posts into the *current* conversation.
+
+    With a staff code the stock-in executes immediately and a "Stock
+    received" card lands in the chat. Without one it posts a pending-
+    confirmation card; a member of the posting shop confirms it with their
+    code and the card becomes the received card in place.
+    """
+    me = request.chat_shop
+    convo = services.get_member_conversation(conversation_id, me)
+    if convo is None:
+        return _err("Conversation not found.", 404)
+    me_part, peer = _participants(convo, me)
+    if me_part:
+        services.touch_presence(me_part)
+
+    data = _json_body(request)
+    supplier_name = (data.get("supplier_name") or "").strip() or "QUICK STOCK-IN"
+    supplier_phone = (
+        (data.get("supplier_phone") or "").strip()
+        or (me.phone_number or "").strip()
+    )
+    if not supplier_phone:
+        return _err(
+            "Your shop has no phone number on file — "
+            "use the Stock in panel instead."
+        )
+    payload = {
+        "lines": data.get("lines") or [],
+        "supplier_name": supplier_name,
+        "supplier_phone": supplier_phone,
+    }
+    code = (data.get("staff_code") or "").strip()
+    group = convo.kind == ConversationKind.GROUP
+    peers = (
+        [p for p in convo.participants.all() if p.shop_id != me.pk]
+        if group
+        else None
+    )
+    sender_names = (
+        {sid: s.name for sid, s in services.shops_map_for([convo]).items()}
+        if group
+        else None
+    )
+
+    if code:
+        # Member/owner path: a typed code executes immediately.
+        try:
+            movement, lines = stock_ops.create_stock_in(
+                me,
+                payload["lines"],
+                supplier_name=supplier_name,
+                supplier_phone=supplier_phone,
+                staff_code=code,
+                require_member=_needs_member_confirmation(request, me),
+            )
+        except stock_ops.StockError as exc:
+            return _err(str(exc))
+        summary = ", ".join(
+            f"{line['quantity']}× {line['item'].name}" for line in lines
+        )
+        body = f"Stock received: {summary} — {supplier_name.upper()}"
+        card = stock_ops.stock_in_card(
+            movement, me, lines, supplier_name.upper()
+        )
+        msg = services.post_card(convo, me, body, card)
+    else:
+        emp = current_employee(request)
+        try:
+            body, meta = stock_ops.build_pending(
+                "stockin",
+                me,
+                payload,
+                requested_by=(
+                    stock_ops.employee_label(emp["id"]) if emp else me.name
+                ),
+                requested_by_id=emp["id"] if emp else None,
+            )
+        except stock_ops.StockError as exc:
+            return _err(str(exc))
+        # Only members of the shop receiving the stock may confirm it.
+        meta["pending_action"]["shop_id"] = me.pk
+        meta["pending_action"]["shop_name"] = me.name
+        msg = services.post_card(convo, me, body, meta)
+
+    if me_part:
+        services.mark_read(me_part, msg.pk)
+    return JsonResponse(
+        {
+            "ok": True,
+            "pending": not code,
+            "message": services.serialize_message(
+                msg, me, peer, convo.kind == ConversationKind.BOT,
+                peers=peers, sender_names=sender_names,
+            ),
+            "conversation_id": convo.pk,
+        }
+    )
+
+
+@api_shop_required
+@require_POST
 def api_pending_confirm(request, message_id):
     """A shop member's staff code executes a stored pending request.
 
@@ -858,16 +1063,19 @@ def api_pending_confirm(request, message_id):
         return _err("This request was already handled.")
 
     data = _json_body(request)
+    # Group/thread cards name the shop that owns the action — only its
+    # members' codes verify. Cards without shop_id act on the viewer's shop.
+    action_shop = services.shop_by_id(pa.get("shop_id")) or me
     emp_id = stock_ops.member_employee_id(
-        data.get("staff_code") or "", me
+        data.get("staff_code") or "", action_shop
     )
     if emp_id is None:
         return _err(
-            "Only a member of this shop can confirm — "
+            f"Only a member of {action_shop.name} can confirm — "
             "ask a shop staff member to enter their code."
         )
     try:
-        result = stock_ops.execute_pending(me, pa, emp_id)
+        result = stock_ops.execute_pending(action_shop, pa, emp_id)
     except stock_ops.StockError as exc:
         return _err(str(exc))
 
@@ -879,15 +1087,54 @@ def api_pending_confirm(request, message_id):
     msg.body = result["body"]
     msg.save(update_fields=["meta", "body"])
 
+    convo = msg.conversation
+    me_part, peer = _participants(convo, me)
+    group = convo.kind == ConversationKind.GROUP
+    peers = (
+        [p for p in convo.participants.all() if p.shop_id != me.pk]
+        if group
+        else None
+    )
+    sender_names = (
+        {sid: s.name for sid, s in services.shops_map_for([convo]).items()}
+        if group
+        else None
+    )
     payload = {
         "ok": True,
-        "message": services.serialize_message(msg, me, None, True),
+        "message": services.serialize_message(
+            msg, me, peer, convo.kind == ConversationKind.BOT,
+            peers=peers, sender_names=sender_names,
+        ),
+        "whatsapp_url": result.get("whatsapp_url") or "",
     }
+    if result["action"] == "stockin":
+        # The quick `#` flow: the card becomes the received card and a note
+        # lands in the chat so every member sees it went through.
+        label = stock_ops.employee_label(emp_id)
+        note = services.post_card(
+            convo,
+            action_shop,
+            result["body"] + (f" — confirmed by {label}" if label else ""),
+            {},
+        )
+        if me_part:
+            services.mark_read(me_part, note.pk)
+        payload["note"] = services.serialize_message(
+            note, me, peer, convo.kind == ConversationKind.BOT,
+            peers=peers, sender_names=sender_names,
+        )
     if result["action"] == "transfer":
         destination = result["destination"]
         dest_convo = services.get_or_create_direct(me, destination)
+        # Rebuild the card non-readonly — result["meta"] is the readonly
+        # summary for the sender's thread; the destination must be able to
+        # accept/decline from their copy.
+        dest_meta = stock_ops.transfer_card(
+            result["movement"], me, destination, result["movement_lines"]
+        )
         card_msg = services.post_card(
-            dest_convo, me, result["body"], result["meta"]
+            dest_convo, me, result["body"], dest_meta
         )
         card_msg.client_tag = f"transfer:{result['movement'].pk}"
         card_msg.save(update_fields=["client_tag"])
@@ -955,14 +1202,20 @@ def api_stock_in(request):
 def api_sale(request):
     """Record a sale — mirrors MY-SHOP's checkout (receipt + stock + serials).
 
+    Sales, credit sales and quotations are exempt from member confirmation
+    (only stock-in and transfers need it): a signed-in staff member
+    completes them under their own employee profile when no code is typed;
+    a typed code only needs to be an active employee, not a shop member.
     The receipt card is posted privately to the shop's Assistant thread.
     """
     me = request.chat_shop
     data = _json_body(request)
-    if _needs_member_confirmation(request, me) and not (
-        data.get("staff_code") or ""
-    ).strip():
-        return _post_pending(request, me, "sale", data)
+    emp = current_employee(request)
+    code = (data.get("staff_code") or "").strip()
+    kind = (data.get("kind") or "sale").strip().lower()
+    if kind in stock_ops.TRADE_KINDS:
+        return _api_trade(request, me, data, kind)
+    employee_id = emp["id"] if emp is not None and not code else None
     due = None
     if data.get("credit_due_date"):
         try:
@@ -975,13 +1228,115 @@ def api_sale(request):
         receipt, lines = stock_ops.create_sale(
             me,
             data.get("lines") or [],
-            kind=(data.get("kind") or "sale").strip().lower(),
+            kind=kind,
             payment_method=data.get("payment_method") or "",
             cash_amount=data.get("cash_amount"),
             mpesa_amount=data.get("mpesa_amount"),
             client_name=data.get("client_name") or "",
             client_phone=data.get("client_phone") or "",
             credit_due_date=due,
+            staff_code=data.get("staff_code") or "",
+            share_whatsapp=bool(data.get("share_whatsapp")),
+            employee_id=employee_id,
+        )
+    except stock_ops.StockError as exc:
+        return _err(str(exc))
+
+    convo = services.get_or_create_bot(me)
+    total = sum((l["line_total"] for l in lines))
+    body = (
+        f"{stock_ops.receipt_label(receipt.kind)} {receipt.receipt_number} — "
+        f"{len(lines)} item"
+        f"{'s' if len(lines) != 1 else ''}, KSh {total:,.2f}"
+    )
+    card = stock_ops.sale_card(receipt, lines, total)
+    msg = services.post_bot_reply(convo, body, card)
+    me_part, _ = _participants(convo, me)
+    if me_part:
+        services.mark_read(me_part, msg.pk)
+    return JsonResponse(
+        {
+            "ok": True,
+            "receipt": receipt.receipt_number,
+            "message": services.serialize_message(msg, me, None, True),
+            "conversation_id": convo.pk,
+            "whatsapp_url": stock_ops.quotation_whatsapp_url(
+                receipt,
+                lines,
+                share_whatsapp=bool(data.get("share_whatsapp")),
+            ),
+        }
+    )
+
+
+@api_shop_required
+@require_POST
+def api_expense(request):
+    """Register a shop expense — mirrors MY-SHOP's register_shop_expense.
+
+    Supplier name + phone are required (upserted into shops_expensesupplier).
+    Gated like stock-in and transfers: staff acting on a shop they aren't
+    allocated to send a pending-confirmation card. The receipt card posts
+    privately to the shop's Assistant thread.
+    """
+    me = request.chat_shop
+    data = _json_body(request)
+    if _needs_member_confirmation(request, me) and not (
+        data.get("staff_code") or ""
+    ).strip():
+        return _post_pending(request, me, "expense", data)
+    try:
+        expense = stock_ops.create_expense(
+            me,
+            category=data.get("category") or "",
+            name=data.get("name") or "",
+            amount=data.get("amount"),
+            payment_status=data.get("payment_status") or "",
+            supplier_name=data.get("supplier_name") or "",
+            supplier_phone=data.get("supplier_phone") or "",
+            staff_code=data.get("staff_code") or "",
+            require_member=_needs_member_confirmation(request, me),
+        )
+    except stock_ops.StockError as exc:
+        return _err(str(exc))
+
+    convo = services.get_or_create_bot(me)
+    body = (
+        f"Expense {expense.name} — KSh {expense.amount:,.2f}"
+        f" · {expense.payment_status} — {expense.supplier_name}"
+    )
+    card = stock_ops.expense_card(expense, me)
+    msg = services.post_bot_reply(convo, body, card)
+    me_part, _ = _participants(convo, me)
+    if me_part:
+        services.mark_read(me_part, msg.pk)
+    return JsonResponse(
+        {
+            "ok": True,
+            "message": services.serialize_message(msg, me, None, True),
+            "conversation_id": convo.pk,
+        }
+    )
+
+
+def _api_trade(request, me, data, kind):
+    """Trade out / trade in — gated like stock-in and transfers.
+
+    Trades move stock without payment, so staff acting on a shop they aren't
+    allocated to need a member's confirmation (pending card or member code).
+    The receipt card is posted privately to the shop's Assistant thread.
+    """
+    if _needs_member_confirmation(request, me) and not (
+        data.get("staff_code") or ""
+    ).strip():
+        return _post_pending(request, me, "trade", data)
+    try:
+        receipt, lines = stock_ops.create_trade(
+            me,
+            data.get("lines") or [],
+            kind=kind,
+            client_name=data.get("client_name") or "",
+            client_phone=data.get("client_phone") or "",
             staff_code=data.get("staff_code") or "",
             require_member=_needs_member_confirmation(request, me),
         )
@@ -990,9 +1345,9 @@ def api_sale(request):
 
     convo = services.get_or_create_bot(me)
     total = sum((l["line_total"] for l in lines))
-    label = receipt.kind.capitalize()
     body = (
-        f"{label} {receipt.receipt_number} — {len(lines)} item"
+        f"{stock_ops.receipt_label(receipt.kind)} {receipt.receipt_number} — "
+        f"{len(lines)} item"
         f"{'s' if len(lines) != 1 else ''}, KSh {total:,.2f}"
     )
     card = stock_ops.sale_card(receipt, lines, total)

@@ -386,7 +386,8 @@
   var fabShop = document.getElementById("allFabShop");
   var fabMode = document.getElementById("allFabMode");
   var FAB_LABELS = {
-    sale: "New sale", stockin: "Stock in", transfer: "Transfer stock"
+    sale: "New sale", stockin: "Stock in", transfer: "Transfer stock",
+    trade: "Trade", expense: "Register expense"
   };
 
   if (fabs && fabMenu && fabForm) {

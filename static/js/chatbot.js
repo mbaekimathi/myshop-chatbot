@@ -14,6 +14,7 @@
   var URLS = {
     poll: root.dataset.pollUrl,
     open: root.dataset.openUrl,
+    group: root.dataset.groupUrl,
     send: root.dataset.sendBase,
     read: root.dataset.readBase,
     typing: root.dataset.typingBase,
@@ -22,8 +23,10 @@
     transfers: root.dataset.transfersUrl,
     respond: root.dataset.respondBase,
     pendingConfirm: root.dataset.pendingBase,
+    quickStockin: root.dataset.quickStockinBase,
     stockIn: root.dataset.stockinUrl,
     sale: root.dataset.saleUrl,
+    expense: root.dataset.expenseUrl,
     itemSearch: root.dataset.itemSearchUrl,
     supplierSearch: root.dataset.supplierSearchUrl,
     clientSearch: root.dataset.clientSearchUrl,
@@ -58,12 +61,16 @@
     pendingTags: {},
     filter: "",
     contactFilter: "",
+    groupMode: false,
+    groupSel: {},
     lastTypingSent: 0,
     botTopic: "",
     periodMode: "day",
     stock: { mode: null, lines: [], picked: null, serials: [], submitting: false },
     rcvSerials: {},
-    toastTimer: null
+    toastTimer: null,
+    muted: false,
+    lastSoundAt: 0
   };
 
   var els = {
@@ -98,7 +105,13 @@
     contactList: root.querySelector("[data-wa-contact-list]"),
     contactSearch: root.querySelector("[data-wa-contact-search]"),
     contactsClose: root.querySelector("[data-wa-contacts-close]"),
+    contactsTitle: root.querySelector("[data-wa-contacts-title]"),
+    groupName: root.querySelector("[data-wa-groupname]"),
+    groupFoot: root.querySelector("[data-wa-groupfoot]"),
+    groupCreate: root.querySelector("[data-wa-groupcreate]"),
+    groupCreateLabel: root.querySelector("[data-wa-groupcreate-label]"),
     themeToggle: root.querySelector("[data-theme-toggle]"),
+    mute: root.querySelector("[data-wa-mute]"),
     plus: root.querySelector("[data-wa-plus]"),
     menu: root.querySelector("[data-wa-menu]"),
     stockPanel: root.querySelector("[data-stock-panel]"),
@@ -123,6 +136,15 @@
     stockAdd: root.querySelector("[data-stock-add]"),
     stockSupplier: root.querySelector("[data-stock-supplier]"),
     stockPayment: root.querySelector("[data-stock-payment]"),
+    stockClient: root.querySelector("[data-stock-client]"),
+    stockTradeKinds: root.querySelector("[data-stock-tradekinds]"),
+    stockTradeHint: root.querySelector("[data-stock-tradehint]"),
+    stockItemWrap: root.querySelector("[data-stock-itemwrap]"),
+    stockExpense: root.querySelector("[data-stock-expense]"),
+    expenseCategory: root.querySelector("[data-expense-category]"),
+    expenseName: root.querySelector("[data-expense-name]"),
+    expenseAmount: root.querySelector("[data-expense-amount]"),
+    expenseStatus: root.querySelector("[data-expense-status]"),
     stockKind: root.querySelector("[data-stock-kind]"),
     stockDueDate: root.querySelector("[data-stock-duedate]"),
     stockPayMethod: root.querySelector("[data-stock-paymethod]"),
@@ -136,6 +158,8 @@
     stockCodeHint: root.querySelector(".wa-stock__codehint"),
     stockClientNameSuggest: root.querySelector("[data-stock-clientname-suggest]"),
     stockClientPhoneSuggest: root.querySelector("[data-stock-clientphone-suggest]"),
+    stockWhatsappWrap: root.querySelector("[data-stock-whatsapp-wrap]"),
+    stockWhatsapp: root.querySelector("[data-stock-whatsapp]"),
     stockPhone: root.querySelector("[data-stock-phone]"),
     stockPhoneSuggest: root.querySelector("[data-stock-phone-suggest]"),
     stockSupname: root.querySelector("[data-stock-supname]"),
@@ -288,6 +312,9 @@
       }
       var avatar = c.bot
         ? '<span class="comms-avatar" data-tone="2"><i data-lucide="bot"></i></span>'
+        : c.kind === "group"
+        ? '<span class="comms-avatar" data-tone="' + c.tone +
+          '"><i data-lucide="users"></i></span>'
         : '<span class="comms-avatar" data-tone="' + c.tone + '">' +
           escapeHtml(c.initials) + "</span>";
       html +=
@@ -325,6 +352,13 @@
       els.headAvatar.outerHTML =
         '<span class="comms-avatar" data-wa-head-avatar data-tone="2"><i data-lucide="bot"></i></span>';
       els.headAvatar = root.querySelector("[data-wa-head-avatar]");
+    } else if (convo.kind === "group") {
+      els.headMeta.textContent = convo.subtitle;
+      els.headMeta.className = "";
+      els.headAvatar.outerHTML =
+        '<span class="comms-avatar" data-wa-head-avatar data-tone="' + convo.tone +
+        '"><i data-lucide="users"></i></span>';
+      els.headAvatar = root.querySelector("[data-wa-head-avatar]");
     } else {
       els.headAvatar.outerHTML =
         '<span class="comms-avatar" data-wa-head-avatar data-tone="' + convo.tone +
@@ -341,6 +375,14 @@
     if (convo.bot) {
       els.headMeta.textContent = convo.subtitle;
       els.headMeta.className = "";
+      return;
+    }
+    if (convo.kind === "group") {
+      var p = state.peer || {};
+      els.headMeta.textContent = p.typing
+        ? (p.typing_name ? p.typing_name + " is " : "") + "typing…"
+        : convo.subtitle || "";
+      els.headMeta.className = p.typing ? "is-online" : "";
       return;
     }
     var text = lastSeenText(state.peer);
@@ -402,7 +444,7 @@
           escapeHtml(i.price) + '</td><td class="n">' + escapeHtml(i.total) +
           "</td></tr>" + snHtml;
       });
-      return tableCard("shopping-cart",
+      return tableCard(sl.icon || "shopping-cart",
         (sl.label || "Sale") + " " + (sl.receipt || ""), [
         ["#"], ["Item"], ["Qty", 1], ["Price", 1], ["Total", 1]
       ], srows,
@@ -448,6 +490,16 @@
         ["#"], ["Customer"], ["Receipt"], ["Balance", 1], ["Due", 1]
       ], crows, "<b>" + escapeHtml(cr.total) + "</b> across " + cr.count +
         " receipts");
+    }
+    if (card.expense) {
+      var xp = card.expense;
+      return statCard("wallet", "Expense", [
+        ["Expense", xp.name],
+        ["Category", xp.category || "—"],
+        ["Amount", "KSh " + (xp.amount || "0.00"), 1]
+      ], (xp.status || "") +
+        (xp.supplier ? " · " + escapeHtml(xp.supplier) : "") +
+        (xp.shop ? " · " + escapeHtml(xp.shop) : ""));
     }
     if (card.expenses) {
       var ex = card.expenses;
@@ -536,16 +588,20 @@
     if (t) {
       var pending = t.status === "pending";
       var confirmRows = !mine && pending && !t.readonly;
+      // Blind receiving: the server blanks the sent quantities until the
+      // transfer is fulfilled — show "?" and never leak a serial count.
+      var blind = !!t.blind;
       var rows = "";
       (t.items || []).forEach(function (i, idx) {
         var snTotal = i.serial_count || (i.serials || []).length;
+        var expectsSn = snTotal > 0 || (blind && i.expect_serials);
         var rcvCell = "";
         var snHtml = "";
-        if (confirmRows && snTotal) {
+        if (confirmRows && expectsSn) {
           var done = ((state.rcvSerials[t.movement_id] || {})[i.line_id] || [])
             .length;
           rcvCell = '<span class="wa-card__rcv" data-snprog="' + i.line_id +
-            '">' + done + "/" + snTotal + " SN</span>";
+            '">' + done + (snTotal ? "/" + snTotal : "") + " SN</span>";
           // Serial values are masked by the server — the receiver scans each
           // unit; scanned serials show as green chips.
           var matched =
@@ -577,7 +633,8 @@
         }
         rows +=
           '<tr><td class="n">' + (idx + 1) + "</td><td>" + escapeHtml(i.name) +
-          '</td><td class="n">' + escapeHtml(i.qty) + '</td><td class="n">' +
+          '</td><td class="n">' + (blind ? "?" : escapeHtml(i.qty)) +
+          '</td><td class="n">' +
           rcvCell + "</td></tr>" +
           (snHtml
             ? '<tr class="wa-tr--sn"><td></td><td colspan="3">' + snHtml +
@@ -663,6 +720,7 @@
       }).join("");
       var pfoot;
       if (pa.status === "pending") {
+        var shopGate = pa.shop_id && String(pa.shop_id) !== String(me.id);
         pfoot =
           '<div class="wa-card__foot">' + escapeHtml(pa.detail || "") +
           (pa.detail && pa.total ? " · " : "") +
@@ -670,14 +728,20 @@
           '<div class="wa-card__foot">Pending confirmation' +
           (pa.requested_by ? " · requested by " +
             escapeHtml(pa.requested_by) : "") +
-          " — a member of this shop enters their staff code to complete it.</div>" +
-          '<input class="wa-card__sninput" type="password" inputmode="numeric" ' +
-          'maxlength="6" autocomplete="off" spellcheck="false" ' +
-          'placeholder="Shop member staff code" data-pacode="' + msgId + '">' +
-          '<div class="wa-card__actions">' +
-          '<button type="button" class="wa-card__btn wa-card__btn--ok" ' +
-          'data-paconfirm="' + msgId + '">Confirm</button></div>' +
-          '<div class="wa-card__err" data-paerr="' + msgId + '" hidden></div>';
+          (pa.shop_name
+            ? " — a member of " + escapeHtml(pa.shop_name) +
+              " enters their staff code to complete it."
+            : " — a member of this shop enters their staff code to complete it.") +
+          "</div>" +
+          (shopGate
+            ? ""
+            : '<input class="wa-card__sninput" type="password" inputmode="numeric" ' +
+              'maxlength="6" autocomplete="off" spellcheck="false" ' +
+              'placeholder="Shop member staff code" data-pacode="' + msgId + '">' +
+              '<div class="wa-card__actions">' +
+              '<button type="button" class="wa-card__btn wa-card__btn--ok" ' +
+              'data-paconfirm="' + msgId + '">Confirm</button></div>' +
+              '<div class="wa-card__err" data-paerr="' + msgId + '" hidden></div>');
       } else {
         pfoot = '<div class="wa-card__foot is-in">' +
           escapeHtml(pa.status || "") + "</div>";
@@ -695,11 +759,16 @@
   }
 
   function messageHtml(m) {
+    if (m.kind === "system") {
+      return '<div class="wa-sys" data-msg="' + m.id + '"><span>' +
+        escapeHtml(m.body) + "</span></div>";
+    }
     var side = m.mine ? "is-out" : "is-in";
     var inner;
     if (m.meta && (m.meta.transfer || m.meta.stock_in || m.meta.items_sold ||
         m.meta.sales || m.meta.summary || m.meta.credits || m.meta.expenses ||
-        m.meta.movement || m.meta.sale || m.meta.pending_action)) {
+        m.meta.movement || m.meta.sale || m.meta.pending_action ||
+        m.meta.expense)) {
       inner = cardHtml(m.meta, m.mine, m.id);
       if (m.meta.confirmed && m.meta.confirmed.by) {
         inner += '<div class="wa-card__confirmed">✓ Confirmed by ' +
@@ -711,6 +780,11 @@
       if (m.body) inner += "<p>" + formatBody(m.body) + "</p>";
     } else {
       inner = "<p>" + formatBody(m.body) + "</p>";
+    }
+    if (!m.bot && state.activeKind === "group" && m.sender_name) {
+      inner = '<span class="wa-bubble__sender" data-stone="' +
+        ((m.sender_id % 6) + 1) + '">' + escapeHtml(m.sender_name) +
+        "</span>" + inner;
     }
     return '<div class="wa-bubble-row ' + side + '" data-msg="' + m.id + '">' +
       '<div class="wa-bubble ' + side + '">' +
@@ -788,21 +862,25 @@
     els.input.focus();
   }
 
+  function openFromResponse(resp) {
+    var convo = resp.conversation;
+    var existing = findConvo(convo.id);
+    if (!existing) state.conversations.push(convo);
+    if (resp.active) {
+      state.peer = resp.active.peer;
+      state.messages = resp.active.messages || [];
+      state.lastMsgId = state.messages.length
+        ? state.messages[state.messages.length - 1].id : 0;
+    }
+    renderChatList();
+    openConversation(convo.id);
+    hideContacts();
+  }
+
   function openByTarget(target) {
     post(URLS.open, { target: String(target) }).then(function (resp) {
       if (!resp.ok) return;
-      var convo = resp.conversation;
-      var existing = findConvo(convo.id);
-      if (!existing) state.conversations.push(convo);
-      if (resp.active) {
-        state.peer = resp.active.peer;
-        state.messages = resp.active.messages || [];
-        state.lastMsgId = state.messages.length
-          ? state.messages[state.messages.length - 1].id : 0;
-      }
-      renderChatList();
-      openConversation(convo.id);
-      hideContacts();
+      openFromResponse(resp);
     });
   }
 
@@ -888,6 +966,9 @@
 
   function pollNow() {
     var params = "";
+    // after_id=0 means a full thread load (just opened) — those are old
+    // messages, so only incremental fetches may fire notifications.
+    var incremental = state.lastMsgId > 0;
     if (state.activeId) {
       params = "?conversation_id=" + state.activeId + "&after_id=" + state.lastMsgId;
     }
@@ -906,7 +987,13 @@
             var exists = state.messages.some(function (x) {
               return x.id === m.id;
             });
-            if (!exists) { state.messages.push(m); added = true; }
+            if (!exists) {
+              state.messages.push(m);
+              added = true;
+              if (incremental && !m.mine && m.kind !== "system") {
+                notifyThreadMessage(m);
+              }
+            }
             if (typeof m.id === "number" && m.id > state.lastMsgId) {
               state.lastMsgId = m.id;
             }
@@ -929,6 +1016,14 @@
           }
           updateHeadMeta();
         }
+        // Chats other than the open one only expose an unread count —
+        // a bump means at least one new incoming message landed.
+        state.conversations.forEach(function (c) {
+          if (c.id !== state.activeId && c.unread > (wasUnread[c.id] || 0)) {
+            notifyConversation(c);
+          }
+        });
+        updateTitleBadge();
         renderChatList();
       })
       .catch(function () {
@@ -958,31 +1053,218 @@
   }
 
   // ------------------------------------------------------------------
+  // Notifications — a light pop for chat, a triple chime for stock
+  // events (transfer, stock-in, sale, pending confirmations), plus an
+  // unread count in the tab title and an OS notification while hidden.
+  // ------------------------------------------------------------------
+
+  // Card meta keys that flag a business event rather than conversation.
+  var ALERT_CARDS = {
+    transfer: 1, stock_in: 1, sale: 1, pending_action: 1, expense: 1
+  };
+  var audioCtx = null;
+  var baseTitle = document.title;
+
+  function ensureAudio() {
+    if (audioCtx) {
+      if (audioCtx.state === "suspended") {
+        try { audioCtx.resume(); } catch (e) {}
+      }
+      return;
+    }
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    try { audioCtx = new AC(); } catch (e) {}
+  }
+
+  function tone(freq, offset, dur, type, vol) {
+    var t = audioCtx.currentTime + offset;
+    var osc = audioCtx.createOscillator();
+    var gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(vol, t + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(t);
+    osc.stop(t + dur + 0.05);
+  }
+
+  // Chat ping: two quick high blips. Stock alert: a lower triple chime
+  // so a transfer or stock-in is unmistakable across the counter.
+  function playSound(cls) {
+    if (!audioCtx) return;
+    if (cls === "stock") {
+      tone(659.25, 0, 0.16, "triangle", 0.22);
+      tone(523.25, 0.14, 0.16, "triangle", 0.22);
+      tone(783.99, 0.28, 0.26, "triangle", 0.24);
+    } else {
+      tone(1174.66, 0, 0.09, "sine", 0.16);
+      tone(1567.98, 0.08, 0.12, "sine", 0.14);
+    }
+  }
+
+  function classifyMeta(meta) {
+    meta = meta || {};
+    for (var key in ALERT_CARDS) {
+      if (meta[key]) return "stock";
+    }
+    return "chat";
+  }
+
+  function classifyCard(card) {
+    return ALERT_CARDS[card] ? "stock" : "chat";
+  }
+
+  function updateTitleBadge() {
+    var total = 0;
+    state.conversations.forEach(function (c) { total += c.unread || 0; });
+    document.title = total ? "(" + total + ") " + baseTitle : baseTitle;
+  }
+
+  function notify(opts) {
+    // Sounds are throttled so a burst of messages doesn't machine-gun.
+    var now = Date.now();
+    if (!state.muted && now - state.lastSoundAt > 350) {
+      ensureAudio();
+      if (audioCtx) {
+        state.lastSoundAt = now;
+        playSound(opts.cls);
+      }
+    }
+    // A toast for messages landing in a chat you're not looking at.
+    if (opts.toast) showToast(opts.title + " — " + opts.body);
+    // An OS notification while the tab is in the background.
+    if (document.hidden && "Notification" in window &&
+        Notification.permission === "granted") {
+      try {
+        var n = new Notification(opts.title, {
+          body: opts.body,
+          tag: "mychat-" + (opts.convoId || "app"),
+          icon: "/static/img/icon-192.png",
+          badge: "/static/img/icon-192.png"
+        });
+        n.onclick = function () {
+          window.focus();
+          if (opts.convoId) openConversation(opts.convoId);
+          n.close();
+        };
+      } catch (e) {}
+    }
+  }
+
+  // A message that arrived inside the open thread.
+  function notifyThreadMessage(m) {
+    var convo = findConvo(state.activeId);
+    var title = convo ? convo.title : "New message";
+    if (convo && convo.kind === "group" && m.sender_name) {
+      title = m.sender_name + " · " + convo.title;
+    }
+    notify({
+      cls: classifyMeta(m.meta),
+      title: title,
+      body: m.body || (m.kind === "image" ? "Photo" : "New message"),
+      convoId: state.activeId
+    });
+  }
+
+  // An unread-count bump on a conversation that isn't open.
+  function notifyConversation(c) {
+    var last = c.last_message || {};
+    var body = last.preview || "New message";
+    if (c.unread > 1) body = "(" + c.unread + ") " + body;
+    notify({
+      cls: classifyCard(last.card),
+      title: c.title,
+      body: body,
+      convoId: c.id,
+      toast: !document.hidden
+    });
+  }
+
+  // ------------------------------------------------------------------
   // Contacts panel
   // ------------------------------------------------------------------
 
   function renderContacts() {
     var html = "";
     var q = state.contactFilter.toLowerCase();
+    if (!state.groupMode) {
+      html +=
+        '<button type="button" class="wa-chat" data-newgroup>' +
+        '<span class="comms-avatar" data-tone="2"><i data-lucide="users"></i></span>' +
+        '<span class="wa-chat__main"><span class="wa-chat__top"><strong>' +
+        "New group</strong></span>" +
+        '<span class="wa-chat__preview">Chat with several shops at once' +
+        "</span></span></button>";
+    }
     state.contacts
       .filter(function (s) {
         return !q || s.name.toLowerCase().indexOf(q) !== -1 ||
           s.location.toLowerCase().indexOf(q) !== -1;
       })
       .forEach(function (s) {
+        var check = "";
+        if (state.groupMode) {
+          check =
+            '<span class="wa-chat__check' +
+            (state.groupSel[s.id] ? " is-on" : "") + '">' +
+            '<i data-lucide="' +
+            (state.groupSel[s.id] ? "check-circle-2" : "circle") +
+            '"></i></span>';
+        }
         html += '<button type="button" class="wa-chat" data-contact="' + s.id + '">' +
           '<span class="comms-avatar" data-tone="' + s.tone + '">' +
           escapeHtml(s.initials) + "</span>" +
           '<span class="wa-chat__main"><span class="wa-chat__top"><strong>' +
           escapeHtml(s.name) + "</strong></span>" +
           '<span class="wa-chat__preview">' + escapeHtml(s.location) +
-          "</span></span></button>";
+          "</span></span>" + check + "</button>";
       });
     els.contactList.innerHTML = html ||
       '<p class="wa-app__none">No other shops are registered.</p>';
+    refreshIcons();
+  }
+
+  function groupCount() {
+    var n = 0;
+    for (var k in state.groupSel) if (state.groupSel[k]) n++;
+    return n;
+  }
+
+  function syncGroupUi() {
+    if (els.groupFoot) els.groupFoot.hidden = !state.groupMode;
+    if (els.contactsTitle) {
+      els.contactsTitle.textContent = state.groupMode ? "New group" : "New chat";
+    }
+    if (els.groupCreateLabel) {
+      var n = groupCount();
+      els.groupCreateLabel.textContent = n
+        ? "Create group (" + n + ")"
+        : "Create group";
+    }
+  }
+
+  function enterGroupMode() {
+    state.groupMode = true;
+    state.groupSel = {};
+    syncGroupUi();
+    renderContacts();
+    if (els.groupName) els.groupName.focus();
+  }
+
+  function leaveGroupMode() {
+    if (!state.groupMode) return;
+    state.groupMode = false;
+    state.groupSel = {};
+    if (els.groupName) els.groupName.value = "";
+    syncGroupUi();
   }
 
   function showContacts() {
+    leaveGroupMode();
     renderContacts();
     els.contacts.hidden = false;
     els.contactSearch.value = "";
@@ -990,7 +1272,39 @@
     els.contactSearch.focus();
   }
 
-  function hideContacts() { els.contacts.hidden = true; }
+  function hideContacts() {
+    els.contacts.hidden = true;
+    leaveGroupMode();
+  }
+
+  function createGroup() {
+    var name = (els.groupName.value || "").trim();
+    if (!name) {
+      els.groupName.focus();
+      showToast("Give the group a name first.");
+      return;
+    }
+    var ids = [];
+    for (var k in state.groupSel) {
+      if (state.groupSel[k]) ids.push(parseInt(k, 10));
+    }
+    if (!ids.length) {
+      showToast("Pick at least one shop to add.");
+      return;
+    }
+    els.groupCreate.disabled = true;
+    post(URLS.group, { name: name, members: ids })
+      .then(function (resp) {
+        if (!resp.ok) {
+          showToast(resp.error || "Could not create the group.");
+          return;
+        }
+        openFromResponse(resp);
+      })
+      .finally(function () {
+        els.groupCreate.disabled = false;
+      });
+  }
 
   // ------------------------------------------------------------------
   // Emoji + suggestions + history
@@ -1060,8 +1374,41 @@
 
   function stockMode() { return state.stock.mode; }
 
+  function pricedMode() {
+    var m = stockMode();
+    return m === "sale" || m === "stockin" || m === "trade" || m === "quickin";
+  }
+
+  function tradeKind() {
+    var checked = els.stockTradeKinds
+      ? els.stockTradeKinds.querySelector("[data-trade-kind]:checked")
+      : null;
+    return checked ? checked.value : (me.trade_out ? "trade_out" : "trade_in");
+  }
+
+  function syncTradeKind() {
+    var isIn = tradeKind() === "trade_in";
+    if (els.stockTradeHint) {
+      els.stockTradeHint.textContent = isIn
+        ? "The client brings the items — enter what you owe per unit."
+        : "The client takes the items now — they owe you the total.";
+    }
+    els.stockPrice.placeholder = isIn
+      ? "Amount owed per unit (required)"
+      : "Sell price (optional — defaults to shop price)";
+    els.stockSubmitLabel.textContent =
+      isIn ? "Complete trade in" : "Complete trade out";
+    els.stockEmpty.textContent = isIn
+      ? "Add the items the client is bringing."
+      : "Add the items the client is taking.";
+  }
+
   function openStock(mode) {
     var convo = findConvo(state.activeId);
+    if (mode === "trade" && !me.trade_out && !me.trade_in) {
+      showToast("Trade is disabled for this shop.");
+      return;
+    }
     state.stock = { mode: mode, lines: [], picked: null, serials: [], submitting: false };
     els.stockSerialWrap.hidden = true;
     els.stockSerial.value = "";
@@ -1069,16 +1416,22 @@
     els.stockSerialCount.textContent = "0";
     hideSuggest(els.stockSerialSuggest);
     els.stockQty.hidden = false;
-    var titles = { transfer: "Transfer stock", stockin: "Stock in", sale: "New sale" };
-    var labels = { transfer: "Send transfer", stockin: "Save stock in", sale: "Complete sale" };
+    var titles = { transfer: "Transfer stock", stockin: "Stock in", sale: "New sale", trade: "Trade", expense: "Register expense", quickin: "Stock in" };
+    var labels = { transfer: "Send transfer", stockin: "Save stock in", sale: "Complete sale", trade: "Complete trade", expense: "Save expense", quickin: "Send to chat" };
     els.stockTitle.textContent = titles[mode] || "Stock";
     els.stockSubmitLabel.textContent = labels[mode] || "Send";
     els.stockDestWrap.hidden = mode !== "transfer";
-    els.stockSupplier.hidden = mode !== "stockin";
+    els.stockSupplier.hidden = mode !== "stockin" && mode !== "expense";
     els.stockPayment.hidden = mode !== "sale";
-    els.stockPrice.hidden = mode !== "stockin" && mode !== "sale";
-    els.stockPrice.placeholder = mode === "sale"
+    els.stockClient.hidden = mode !== "sale" && mode !== "trade";
+    if (els.stockTradeKinds) els.stockTradeKinds.hidden = mode !== "trade";
+    els.stockExpense.hidden = mode !== "expense";
+    if (els.stockItemWrap) els.stockItemWrap.hidden = mode === "expense";
+    els.stockPrice.hidden = !pricedMode();
+    els.stockPrice.placeholder = mode === "sale" || mode === "trade"
       ? "Sell price (optional — defaults to shop price)"
+      : mode === "quickin"
+      ? "Buying price"
       : "Buying price (optional — for average cost)";
     if (mode === "sale") {
       els.stockKind.value = "sale";
@@ -1090,32 +1443,73 @@
       els.stockMpesaAmt.value = "";
       els.stockClientName.value = "";
       els.stockClientPhone.value = "";
+      els.stockWhatsappWrap.hidden = true;
+      els.stockWhatsapp.checked = true;
       els.stockClientName.placeholder = "Client name (optional)";
+      els.stockClientPhone.placeholder = "Client phone (optional)";
       els.stockSubmitLabel.textContent = "Complete sale";
+    }
+    if (mode === "trade") {
+      els.stockClientName.value = "";
+      els.stockClientPhone.value = "";
+      els.stockClientName.placeholder = "Client full name (required)";
+      els.stockClientPhone.placeholder = "Client phone (required)";
+      els.stockWhatsappWrap.hidden = true;
+      syncTradeKind();
+    }
+    if (mode === "expense") {
+      els.expenseCategory.value = "";
+      els.expenseName.value = "";
+      els.expenseAmount.value = "";
+      els.expenseStatus.value = "paid";
+      setTimeout(function () { els.expenseName.focus(); }, 60);
     }
     els.stockStaffCode.value = "";
     els.stockCodeBox.hidden = false;
-    var memberConfirm = me.needs_member_confirm;
+    // Member confirmation only gates stock-in and transfers — sales,
+    // credits and quotations complete straight away. For staff sessions
+    // the sale is recorded under the signed-in account, so the code is
+    // optional (typing one re-attributes it to that employee).
+    var memberConfirm = me.needs_member_confirm && mode !== "sale";
+    var ownCode = me.staff_view && mode === "sale";
     // Staff acting on a shop they aren't allocated to send the request as
     // "pending confirmation" — a shop member completes it with their code,
     // on the card or right here.
-    els.stockSubmit.hidden = !memberConfirm;
+    els.stockSubmit.hidden = mode === "quickin" ? false : !memberConfirm;
     if (memberConfirm) {
       els.stockSubmitLabel.textContent = "Send for confirmation";
     }
     els.stockStaffCode.placeholder = memberConfirm
       ? "Member's staff code (optional)"
+      : ownCode
+      ? "Staff code (optional — yours applies)"
+      : mode === "quickin"
+      ? "Staff code (optional — blank posts for confirmation)"
       : "Enter staff code to complete";
     els.stockCodeHint.textContent = memberConfirm
       ? "Sends as pending — a member of this shop confirms it with their " +
         "code, or enter their code here to complete it now"
-      : (mode === "transfer" ? "Transfer sends" : mode === "stockin" ? "Stock in saves" : "Sale completes") +
+      : ownCode
+      ? "Completes under your staff account — enter a staff code to " +
+        "record it under that person instead"
+      : mode === "quickin"
+      ? "Posts to this chat — a member confirms with their code, " +
+        "or enter a code to stock in now"
+      : (mode === "transfer" ? "Transfer sends"
+         : mode === "stockin" ? "Stock in saves"
+         : mode === "trade" ? "Trade completes"
+         : mode === "expense" ? "Expense saves"
+         : "Sale completes") +
         " when your code is verified";
     els.stockEmpty.textContent =
       mode === "transfer"
         ? "Add the items you are sending."
         : mode === "sale"
         ? "Add the items being sold."
+        : mode === "trade"
+        ? (tradeKind() === "trade_in"
+          ? "Add the items the client is bringing."
+          : "Add the items the client is taking.")
         : "Add the items you received.";
     if (mode === "transfer") {
       els.stockDest.innerHTML = state.contacts
@@ -1159,7 +1553,7 @@
   }
 
   function renderStockLines() {
-    var priced = stockMode() === "sale" || stockMode() === "stockin";
+    var priced = pricedMode();
     var rows = state.stock.lines.map(function (line, i) {
       var qtyCell = line.serials
         ? '<span class="wa-stock-line__have">' + line.serials.length +
@@ -1171,7 +1565,11 @@
         priceBits =
           '<span class="wa-stock-line__op">×</span>' +
           '<input type="number" class="wa-stock-line__price" min="0" step="any" ' +
-          'title="' + (stockMode() === "sale" ? "Sell" : "Buying") + ' price" ' +
+          'title="' + (stockMode() === "sale"
+            ? "Sell"
+            : stockMode() === "trade"
+            ? (tradeKind() === "trade_in" ? "Owed" : "Sell")
+            : "Buying") + ' price" ' +
           'placeholder="price" value="' + escapeHtml(line.buying_price || "") +
           '" data-line-price="' + i + '">' +
           '<span class="wa-stock-line__op">=</span>' +
@@ -1191,7 +1589,7 @@
   }
 
   function refreshStockTotal() {
-    var priced = stockMode() === "sale" || stockMode() === "stockin";
+    var priced = pricedMode();
     var lines = state.stock ? state.stock.lines : [];
     var has = priced && lines.length > 0;
     els.stockTotal.hidden = !has;
@@ -1420,6 +1818,24 @@
       return;
     }
     var price = (els.stockPrice.value || "").trim();
+    if (stockMode() === "trade" && tradeKind() === "trade_in" &&
+        (!price || isNaN(parseFloat(price)) || parseFloat(price) <= 0)) {
+      stockError('Enter the amount owed per unit for "' + picked.name + '".');
+      els.stockPrice.focus();
+      return;
+    }
+    if (stockMode() === "quickin" &&
+        (!price || isNaN(parseFloat(price)) || parseFloat(price) <= 0)) {
+      stockError('Enter the buying price for "' + picked.name + '".');
+      els.stockPrice.focus();
+      return;
+    }
+    var linePrice = pricedMode()
+      ? (price ||
+         (stockMode() === "quickin" ||
+          (stockMode() === "trade" && tradeKind() === "trade_in")
+          ? "" : picked.price) || "")
+      : null;
     if (picked.track_serial) {
       if (!state.stock.serials.length) {
         stockError('"' + picked.name + '" is serial-tracked — scan or type its serial numbers.');
@@ -1432,7 +1848,7 @@
         stock: picked.stock,
         serials: state.stock.serials.slice(),
         quantity: String(state.stock.serials.length),
-        buying_price: (stockMode() === "stockin" || stockMode() === "sale") ? (price || picked.price || "") : null
+        buying_price: linePrice
       });
       state.stock.serials = [];
       renderSerialChips();
@@ -1448,7 +1864,7 @@
         name: picked.name,
         stock: picked.stock,
         quantity: qty,
-        buying_price: (stockMode() === "stockin" || stockMode() === "sale") ? (price || picked.price || "") : null
+        buying_price: linePrice
       });
     }
     state.stock.picked = null;
@@ -1498,8 +1914,87 @@
         mpesa_amount: method === "both" ? els.stockMpesaAmt.value : null,
         client_name: els.stockClientName.value,
         client_phone: els.stockClientPhone.value,
+        share_whatsapp: kind === "quotation" && els.stockWhatsapp.checked,
         staff_code: els.stockStaffCode.value,
         credit_due_date: kind === "credit" ? els.stockDueDate.value : null
+      };
+    } else if (mode === "trade") {
+      var tradeName = (els.stockClientName.value || "").trim();
+      var tradePhone = (els.stockClientPhone.value || "").trim();
+      if (!tradeName) {
+        stockError("Enter the client full name.");
+        els.stockClientName.focus();
+        return;
+      }
+      if (!tradePhone) {
+        stockError("Enter the client phone number.");
+        els.stockClientPhone.focus();
+        return;
+      }
+      payload = {
+        kind: tradeKind(),
+        lines: state.stock.lines.map(function (l) {
+          return {
+            item_id: l.item_id,
+            quantity: l.quantity,
+            serials: l.serials || [],
+            buying_price: l.buying_price
+          };
+        }),
+        client_name: tradeName,
+        client_phone: tradePhone,
+        staff_code: els.stockStaffCode.value
+      };
+    } else if (mode === "expense") {
+      var ephone = (els.stockPhone.value || "").trim();
+      var esname = (els.stockSupname.value || "").trim();
+      var ename = (els.expenseName.value || "").trim();
+      var eamount = (els.expenseAmount.value || "").trim();
+      if (!els.expenseCategory.value) {
+        stockError("Choose an expense category.");
+        els.expenseCategory.focus();
+        return;
+      }
+      if (!ename) {
+        stockError("Enter the expense name.");
+        els.expenseName.focus();
+        return;
+      }
+      if (!eamount || isNaN(parseFloat(eamount)) || parseFloat(eamount) <= 0) {
+        stockError("Enter an amount greater than zero.");
+        els.expenseAmount.focus();
+        return;
+      }
+      if (!ephone) {
+        stockError("Enter the supplier's phone number.");
+        els.stockPhone.focus();
+        return;
+      }
+      if (!esname) {
+        stockError("Enter the supplier's name.");
+        els.stockSupname.focus();
+        return;
+      }
+      payload = {
+        category: els.expenseCategory.value,
+        name: ename,
+        amount: eamount,
+        payment_status: els.expenseStatus.value,
+        supplier_name: esname,
+        supplier_phone: ephone,
+        staff_code: els.stockStaffCode.value
+      };
+    } else if (mode === "quickin") {
+      payload = {
+        staff_code: els.stockStaffCode.value,
+        lines: state.stock.lines.map(function (l) {
+          return {
+            item_id: l.item_id,
+            quantity: l.quantity,
+            serials: l.serials || [],
+            buying_price: l.buying_price
+          };
+        })
       };
     } else if (mode === "transfer") {
       payload = {
@@ -1543,8 +2038,10 @@
     state.stock.submitting = true;
     els.stockSubmit.disabled = true;
     stockError("");
-    var url = mode === "transfer" ? URLS.transfers
-      : mode === "sale" ? URLS.sale : URLS.stockIn;
+    var url = mode === "quickin" ? urlFor(URLS.quickStockin, state.activeId)
+      : mode === "transfer" ? URLS.transfers
+      : (mode === "sale" || mode === "trade") ? URLS.sale
+      : mode === "expense" ? URLS.expense : URLS.stockIn;
     post(url, payload)
       .then(function (resp) {
         if (!resp.ok) {
@@ -1554,16 +2051,27 @@
           return;
         }
         closeStock();
+        if (resp.whatsapp_url) {
+          window.open(resp.whatsapp_url, "_blank", "noopener");
+        }
         if (resp.message && resp.conversation_id === state.activeId) {
           appendIfNew(resp.message);
         }
         if (resp.pending) {
-          showToast("Sent — pending a shop member's confirmation " +
-            "(see your Assistant chat).");
+          showToast(mode === "quickin"
+            ? "Posted — a member of your shop confirms with their code."
+            : "Sent — pending a shop member's confirmation " +
+              "(see your Assistant chat).");
+        } else if (mode === "quickin") {
+          showToast("Stock received — posted to the chat.");
         } else if (mode === "transfer") {
           showToast("Transfer sent — the shop is being notified.");
         } else if (mode === "sale") {
           showToast("Sale " + (resp.receipt || "") + " recorded — see your Assistant chat.");
+        } else if (mode === "trade") {
+          showToast("Trade " + (resp.receipt || "") + " recorded — see your Assistant chat.");
+        } else if (mode === "expense") {
+          showToast("Expense saved. See it in your Assistant chat.");
         } else {
           showToast("Stock in saved. See it in your Assistant chat.");
         }
@@ -1622,9 +2130,29 @@
   });
 
   els.contactList.addEventListener("click", function (e) {
+    var newGroup = e.target.closest("[data-newgroup]");
+    if (newGroup) { enterGroupMode(); return; }
     var btn = e.target.closest("[data-contact]");
-    if (btn) openByTarget(btn.dataset.contact);
+    if (!btn) return;
+    if (state.groupMode) {
+      var id = btn.dataset.contact;
+      state.groupSel[id] = !state.groupSel[id];
+      if (!state.groupSel[id]) delete state.groupSel[id];
+      syncGroupUi();
+      renderContacts();
+      return;
+    }
+    openByTarget(btn.dataset.contact);
   });
+
+  if (els.groupCreate) {
+    els.groupCreate.addEventListener("click", createGroup);
+  }
+  if (els.groupName) {
+    els.groupName.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); createGroup(); }
+    });
+  }
 
   els.back.addEventListener("click", function () {
     root.classList.remove("is-chat-open");
@@ -1640,13 +2168,20 @@
   });
 
   els.input.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       sendText(els.input.value);
     }
   });
 
   els.input.addEventListener("input", function () {
+    // "#" opens the quick stock-in flow — pick an item, qty + buy price,
+    // and the card posts into the open chat for a member to confirm.
+    if (els.input.value === "#" && state.activeId) {
+      els.input.value = "";
+      openStock("quickin");
+      return;
+    }
     autosize();
     sendTyping();
   });
@@ -1714,8 +2249,13 @@
       els.stockItemInput.value = item.name;
       hideSuggest(els.stockItemSuggest);
       // Autofill the sell/buy price from the item's shop price — editable.
+      // Trade in is different: the owed amount is negotiated, so it stays
+      // blank until typed (the server requires it anyway).
       if (!els.stockPrice.hidden) {
-        els.stockPrice.value = item.price != null ? item.price : "";
+        var skipAutofill =
+          stockMode() === "trade" && tradeKind() === "trade_in";
+        els.stockPrice.value =
+          !skipAutofill && item.price != null ? item.price : "";
       }
       if (item.track_serial) {
         els.stockQty.hidden = true;
@@ -1870,6 +2410,11 @@
       });
   });
 
+  if (els.stockTradeKinds) {
+    els.stockTradeKinds.addEventListener("change", function (e) {
+      if (e.target.matches("[data-trade-kind]")) syncTradeKind();
+    });
+  }
   els.stockPayMethod.addEventListener("change", function () {
     els.stockPaySplit.hidden = els.stockPayMethod.value !== "both";
   });
@@ -1878,6 +2423,7 @@
     els.stockPayMethod.hidden = k !== "sale";
     els.stockPaySplit.hidden = k !== "sale" || els.stockPayMethod.value !== "both";
     els.stockDueDate.hidden = k !== "credit";
+    els.stockWhatsappWrap.hidden = k !== "quotation";
     els.stockClientName.placeholder =
       k === "sale" ? "Client name (optional)" : "Client name or phone required";
     els.stockSubmitLabel.textContent =
@@ -2067,6 +2613,10 @@
         if (resp.card && resp.card_conversation_id === state.activeId) {
           appendIfNew(resp.card);
         }
+        if (resp.note) appendIfNew(resp.note);
+        if (resp.whatsapp_url) {
+          window.open(resp.whatsapp_url, "_blank", "noopener");
+        }
         scrollBottom(true);
         showToast("Confirmed — the transaction went through.");
         pollNow();
@@ -2149,7 +2699,7 @@
         (mt.items || []).forEach(function (it) {
           if (String(it.line_id) === lineId) {
             expectedCount =
-              it.serial_count || (it.serials || []).length;
+              it.serial_count || (it.serials || []).length || null;
           }
         });
       }
@@ -2183,8 +2733,10 @@
       }
     }
     var prog = root.querySelector('[data-snprog="' + lineId + '"]');
-    if (prog && expectedCount !== null) {
-      prog.textContent = list.length + "/" + expectedCount + " SN";
+    if (prog) {
+      prog.textContent = expectedCount !== null
+        ? list.length + "/" + expectedCount + " SN"
+        : list.length + " SN";
     }
     if (errBox) errBox.hidden = true;
   });
@@ -2241,6 +2793,49 @@
     });
   }
 
+  // Notification sound mute — persisted across visits.
+  function paintMute() {
+    if (!els.mute) return;
+    var on = els.mute.querySelector("[data-bell-on]");
+    var off = els.mute.querySelector("[data-bell-off]");
+    if (on) on.hidden = state.muted;
+    if (off) off.hidden = !state.muted;
+    els.mute.setAttribute("aria-pressed", state.muted ? "true" : "false");
+    els.mute.title = state.muted
+      ? "Unmute notification sounds"
+      : "Mute notification sounds";
+  }
+  try { state.muted = localStorage.getItem("mychat-muted") === "1"; } catch (e) {}
+  if (els.mute) {
+    els.mute.addEventListener("click", function () {
+      state.muted = !state.muted;
+      try {
+        localStorage.setItem("mychat-muted", state.muted ? "1" : "0");
+      } catch (e) {}
+      paintMute();
+      if (!state.muted) {
+        ensureAudio();
+        playSound("chat");
+      }
+    });
+  }
+
+  // Browsers gate audio and Notification permission behind a user
+  // gesture — unlock both on the first tap or keypress.
+  var permissionAsked = false;
+  function firstGesture() {
+    ensureAudio();
+    if (!permissionAsked) {
+      permissionAsked = true;
+      if ("Notification" in window &&
+          Notification.permission === "default") {
+        try { Notification.requestPermission(); } catch (e) {}
+      }
+    }
+  }
+  document.addEventListener("pointerdown", firstGesture);
+  document.addEventListener("keydown", firstGesture);
+
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) pollNow();
   });
@@ -2269,16 +2864,20 @@
   buildYearOptions();
   renderChatList();
   paintTheme();
+  paintMute();
+  updateTitleBadge();
   refreshIcons();
   schedule();
 
-  // Deep link from the all-shops page: /chat/?fab=sale|stockin|transfer
-  // opens that stock panel immediately.
+  // Deep link from the all-shops page: /chat/?fab=sale|stockin|transfer|
+  // trade|expense opens that stock panel immediately.
   var fabParam = "";
   try {
     fabParam = new URLSearchParams(window.location.search).get("fab") || "";
   } catch (e) {}
-  if (fabParam === "sale" || fabParam === "stockin" || fabParam === "transfer") {
+  if (fabParam === "sale" || fabParam === "stockin" ||
+      fabParam === "transfer" || fabParam === "trade" ||
+      fabParam === "expense") {
     openStock(fabParam);
     try {
       window.history.replaceState(null, "", window.location.pathname);

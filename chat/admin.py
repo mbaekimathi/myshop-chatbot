@@ -11,7 +11,9 @@ class ParticipantInline(admin.TabularInline):
 
 @admin.register(Conversation)
 class ConversationAdmin(admin.ModelAdmin):
-    list_display = ("id", "kind", "pair_key", "bot_shop_id", "created_at")
+    list_display = (
+        "id", "kind", "pair_key", "bot_shop_id", "name", "created_at"
+    )
     list_filter = ("kind",)
     inlines = [ParticipantInline]
     readonly_fields = ("created_at",)

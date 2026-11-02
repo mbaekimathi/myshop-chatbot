@@ -165,6 +165,25 @@ class ShopDaySession(models.Model):
         return self.closed_at is None
 
 
+class ExpenseSupplier(models.Model):
+    """Outside vendor for shop expenses (separate from stock suppliers)."""
+
+    id = models.BigAutoField(primary_key=True)
+    name = models.CharField(max_length=160)
+    phone_country_code = models.CharField(max_length=8)
+    phone_country_iso = models.CharField(max_length=2, blank=True, default="KE")
+    phone_number = models.CharField(max_length=20)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "shops_expensesupplier"
+
+    def __str__(self):
+        return f"{self.name} ({self.phone_country_code} {self.phone_number})"
+
+
 class Expense(models.Model):
     id = models.BigAutoField(primary_key=True)
     shop_id = models.BigIntegerField()
@@ -172,7 +191,18 @@ class Expense(models.Model):
     name = models.CharField(max_length=200)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     amount_paid = models.DecimalField(max_digits=12, decimal_places=2)
+    cash_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    mpesa_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     payment_status = models.CharField(max_length=16)
+    supplier_id = models.BigIntegerField(null=True, blank=True)
+    supplier_name = models.CharField(max_length=160, blank=True, default="")
+    supplier_phone_country_code = models.CharField(
+        max_length=8, blank=True, default=""
+    )
+    supplier_phone_number = models.CharField(
+        max_length=20, blank=True, default=""
+    )
+    created_by_id = models.BigIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -191,6 +221,42 @@ class CompanyProfile(models.Model):
     class Meta:
         managed = False
         db_table = "shops_companyprofile"
+
+
+class CompanyPosSettings(models.Model):
+    """Company-wide MY-SHOP POS defaults (singleton row, pk=1).
+
+    Only the columns the trade flow needs are declared.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    enable_trade_out = models.BooleanField(default=True)
+    enable_trade_in = models.BooleanField(default=True)
+    enable_stock_tracking = models.BooleanField(default=True)
+    receipt_format_trade_out = models.CharField(max_length=8, default="T")
+    receipt_format_trade_in = models.CharField(max_length=8, default="TI")
+
+    class Meta:
+        managed = False
+        db_table = "shops_companypossettings"
+
+
+class ShopPosSettings(models.Model):
+    """Per-shop POS overrides — apply only when the override flag is on."""
+
+    id = models.BigAutoField(primary_key=True)
+    shop_id = models.BigIntegerField()
+    override_pos = models.BooleanField(default=False)
+    override_receipt = models.BooleanField(default=False)
+    enable_trade_out = models.BooleanField(default=True)
+    enable_trade_in = models.BooleanField(default=True)
+    enable_stock_tracking = models.BooleanField(default=True)
+    receipt_format_trade_out = models.CharField(max_length=8, default="T")
+    receipt_format_trade_in = models.CharField(max_length=8, default="TI")
+
+    class Meta:
+        managed = False
+        db_table = "shops_shoppossettings"
 
 
 class ItemSerial(models.Model):

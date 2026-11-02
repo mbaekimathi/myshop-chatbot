@@ -128,6 +128,28 @@ def get_or_create_bot(shop: Shop) -> Conversation:
     return convo
 
 
+def create_group(me: Shop, name: str, members: list) -> Conversation:
+    """A multi-shop thread — membership is a plain participant list."""
+    convo = Conversation.objects.create(
+        kind=ConversationKind.GROUP, name=name
+    )
+    seen = {me.pk}
+    parts = [Participant(conversation=convo, shop_id=me.pk)]
+    for shop in members:
+        if shop.pk in seen:
+            continue
+        seen.add(shop.pk)
+        parts.append(Participant(conversation=convo, shop_id=shop.pk))
+    Participant.objects.bulk_create(parts)
+    Message.objects.create(
+        conversation=convo,
+        sender_shop_id=None,
+        kind=MessageKind.SYSTEM,
+        body=f"{me.name} created group “{name}”",
+    )
+    return convo
+
+
 def my_conversations(shop: Shop):
     return (
         Conversation.objects.filter(participants__shop_id=shop.pk)
@@ -282,26 +304,46 @@ def _time_iso(dt) -> str:
 
 
 def serialize_message(
-    msg: Message, me: Shop, peer: Participant | None, bot_thread: bool = False
+    msg: Message,
+    me: Shop,
+    peer: Participant | None = None,
+    bot_thread: bool = False,
+    peers: list | None = None,
+    sender_names: dict | None = None,
 ) -> dict:
     mine = msg.sender_shop_id == me.pk
     if msg.is_bot or not mine or bot_thread:
         status = "read"
+    elif peers is not None:
+        status = _group_message_status(msg, peers)
     else:
         status = _message_status(msg, peer)
     meta = msg.meta or {}
+    body = msg.body
     transfer = meta.get("transfer")
     if (
         transfer
-        and transfer.get("status") == "pending"
+        and transfer.get("status") != "fulfilled"
         and transfer.get("to_shop_id") == me.pk
     ):
-        # The receiving shop must scan the serials to confirm — mask the
-        # values so they cannot just read them off the card.
+        # Blind receiving: the receiver counts what actually arrived, so the
+        # sent quantities and serial values stay hidden until they accept
+        # and the stock is moved in.
+        body = "Incoming stock transfer from " + (
+            transfer.get("from_shop") or "a shop"
+        )
         meta = dict(meta)
         transfer = dict(transfer)
+        transfer["blind"] = True
         transfer["items"] = [
-            {**item, "serials": []} for item in (transfer.get("items") or [])
+            {
+                **item,
+                "qty": "",
+                "serials": [],
+                "serial_count": 0,
+                "expect_serials": bool(item.get("serial_count")),
+            }
+            for item in (transfer.get("items") or [])
         ]
         meta["transfer"] = transfer
 
@@ -319,11 +361,15 @@ def serialize_message(
         "kind": msg.kind,
         "mine": mine,
         "bot": bool(msg.is_bot),
-        "body": msg.body,
+        "body": body,
         "meta": meta,
         "created_at": _time_iso(msg.created_at),
         "status": status,
     }
+    if sender_names is not None and msg.sender_shop_id:
+        # Group threads label every bubble with its sender's shop.
+        data["sender_id"] = msg.sender_shop_id
+        data["sender_name"] = sender_names.get(msg.sender_shop_id, "")
     if msg.kind == MessageKind.IMAGE and msg.attachment:
         from django.urls import reverse
 
@@ -345,6 +391,45 @@ def _message_status(msg: Message, peer: Participant | None) -> str:
     return "sent"
 
 
+def _group_message_status(msg: Message, peers: list) -> str:
+    """Group ticks mirror WhatsApp: read/delivered only once everyone is."""
+    if not peers:
+        return "sent"
+    if all(p.last_read_id >= msg.pk for p in peers):
+        return "read"
+    if all(
+        p.last_seen_at is not None and p.last_seen_at >= msg.created_at
+        for p in peers
+    ):
+        return "delivered"
+    return "sent"
+
+
+# Meta keys that mark a message as a rich card — mirrored by cardHtml() in
+# chatbot.js. The first key present becomes last_message.card so the client
+# can pick the right notification sound without fetching the thread.
+CARD_META_KEYS = (
+    "transfer",
+    "stock_in",
+    "sale",
+    "pending_action",
+    "expense",
+    "movement",
+    "items_sold",
+    "sales",
+    "summary",
+    "credits",
+    "expenses",
+)
+
+
+def _card_flag(meta: dict | None) -> str:
+    for key in CARD_META_KEYS:
+        if key in (meta or {}):
+            return key
+    return ""
+
+
 def _peer_of(convo: Conversation, me: Shop) -> Participant | None:
     for p in convo.participants.all():
         if p.shop_id != me.pk:
@@ -359,11 +444,27 @@ def _me_part(convo: Conversation, me: Shop) -> Participant | None:
     return None
 
 
+def _group_others(convo: Conversation, me: Shop) -> list:
+    return [p for p in convo.participants.all() if p.shop_id != me.pk]
+
+
+def _group_subtitle(convo: Conversation, me: Shop, shops_map: dict) -> str:
+    names = [
+        shops_map[p.shop_id].name
+        for p in _group_others(convo, me)
+        if p.shop_id in shops_map
+    ]
+    if names:
+        return ", ".join(names)[:80]
+    total = convo.participants.count()
+    return f"{total} member{'s' if total != 1 else ''}"
+
+
 def serialize_conversation(convo: Conversation, me: Shop, shops_map: dict) -> dict:
     peer = _peer_of(convo, me)
     me_part = _me_part(convo, me)
     last = convo.messages.only(
-        "id", "sender_shop_id", "is_bot", "kind", "body", "created_at"
+        "id", "sender_shop_id", "is_bot", "kind", "body", "meta", "created_at"
     ).last()
     last_read = me_part.last_read_id if me_part else 0
     unread = (
@@ -371,12 +472,22 @@ def serialize_conversation(convo: Conversation, me: Shop, shops_map: dict) -> di
         .exclude(sender_shop_id=me.pk)
         .count()
     )
+    group = convo.kind == ConversationKind.GROUP
+    others = _group_others(convo, me) if group else []
 
     if convo.kind == ConversationKind.BOT:
         title, subtitle, tone, bot = BOT_NAME, BOT_SUBTITLE, 2, True
         online = True
         last_seen = ""
         typing = False
+    elif group:
+        bot = False
+        title = convo.name or "Group"
+        subtitle = _group_subtitle(convo, me, shops_map)
+        tone = avatar_tone(convo.pk)
+        online = any(is_online(p) for p in others)
+        last_seen = ""
+        typing = any(is_typing(p) for p in others)
     else:
         bot = False
         peer_shop = shops_map.get(peer.shop_id) if peer else None
@@ -394,14 +505,38 @@ def serialize_conversation(convo: Conversation, me: Shop, shops_map: dict) -> di
     last_data = None
     if last is not None:
         preview = last.body or ("Photo" if last.kind == MessageKind.IMAGE else "")
+        lt = (last.meta or {}).get("transfer") or {}
+        if (
+            lt.get("to_shop_id") == me.pk
+            and lt.get("status") != "fulfilled"
+        ):
+            # Keep the sent quantities out of the receiver's chat preview —
+            # they count what arrived before the figures are revealed.
+            preview = "Incoming stock transfer from " + (
+                lt.get("from_shop") or "a shop"
+            )
+        if (
+            group
+            and last.sender_shop_id
+            and last.sender_shop_id != me.pk
+            and last.kind != MessageKind.SYSTEM
+        ):
+            # WhatsApp-style preview: prefix who spoke in the group.
+            sender = shops_map.get(last.sender_shop_id)
+            if sender is not None:
+                preview = f"{sender.name}: {preview}"
         last_data = {
             "preview": preview[:90],
             "mine": last.sender_shop_id == me.pk,
             "bot": bool(last.is_bot),
+            "kind": last.kind,
+            "card": _card_flag(last.meta),
             "created_at": _time_iso(last.created_at),
             "status": (
                 "read"
                 if convo.kind == ConversationKind.BOT
+                else _group_message_status(last, others)
+                if group
                 else _message_status(last, peer)
             )
             if last.sender_shop_id == me.pk
@@ -416,13 +551,32 @@ def serialize_conversation(convo: Conversation, me: Shop, shops_map: dict) -> di
         "initials": "*" if bot else initials(title),
         "tone": tone,
         "bot": bot,
-        "peer_shop_id": peer.shop_id if peer else None,
+        "peer_shop_id": peer.shop_id if peer and not group else None,
         "online": online,
         "last_seen": last_seen,
         "typing": typing,
         "unread": unread,
         "last_message": last_data,
         "last_id": last.pk if last else 0,
+    }
+
+
+def serialize_group_peer(
+    convo: Conversation, me: Shop, shops_map: dict
+) -> dict:
+    """The `peer` block of an open group thread — aggregates every member."""
+    others = _group_others(convo, me)
+    typer = next((p for p in others if is_typing(p)), None)
+    typer_shop = shops_map.get(typer.shop_id) if typer else None
+    return {
+        "online": any(is_online(p) for p in others),
+        "typing": typer is not None,
+        "typing_name": typer_shop.name if typer_shop else "",
+        "last_seen": "",
+        "name": convo.name or "Group",
+        "location": _group_subtitle(convo, me, shops_map),
+        # My own ticks go blue only once every member has read the message.
+        "read_up_to": min((p.last_read_id for p in others), default=0),
     }
 
 

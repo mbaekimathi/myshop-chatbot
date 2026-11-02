@@ -16,10 +16,11 @@ def chat_attachment_path(instance, filename):
 class ConversationKind(models.TextChoices):
     DIRECT = "direct", "Shop to shop"
     BOT = "bot", "Assistant"
+    GROUP = "group", "Group"
 
 
 class Conversation(models.Model):
-    """A direct thread between two shops, or a shop's assistant thread."""
+    """A direct thread between two shops, a group, or an assistant thread."""
 
     kind = models.CharField(
         max_length=12, choices=ConversationKind.choices, db_index=True
@@ -30,6 +31,8 @@ class Conversation(models.Model):
     )
     # Assistant threads: one per shop.
     bot_shop_id = models.BigIntegerField(unique=True, null=True, blank=True)
+    # Group threads: the title the creator gave it.
+    name = models.CharField(max_length=80, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -38,6 +41,8 @@ class Conversation(models.Model):
     def __str__(self):
         if self.kind == ConversationKind.BOT:
             return f"Assistant thread (shop {self.bot_shop_id})"
+        if self.kind == ConversationKind.GROUP:
+            return f"Group {self.name!r}"
         return f"Direct thread {self.pair_key}"
 
 

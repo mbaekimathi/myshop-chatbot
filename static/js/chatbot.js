@@ -115,6 +115,7 @@
     plus: root.querySelector("[data-wa-plus]"),
     menu: root.querySelector("[data-wa-menu]"),
     stockPanel: root.querySelector("[data-stock-panel]"),
+    stockBody: root.querySelector(".wa-stock__body"),
     stockTitle: root.querySelector("[data-stock-title]"),
     stockDestWrap: root.querySelector("[data-stock-dest-wrap]"),
     stockDest: root.querySelector("[data-stock-dest]"),
@@ -1625,14 +1626,56 @@
     return '<button type="button" class="wa-stock__pick">' + html + "</button>";
   }
 
+  // On phones the scrollable panel body clips dropdowns — reparent them to
+  // fixed coordinates anchored to their input so they float over the foot.
+  var mqNarrow = window.matchMedia("(max-width: 639px)");
+
+  function floatSuggest(box) {
+    if (!mqNarrow.matches || !box.closest(".wa-stock__body")) {
+      box.classList.remove("is-float");
+      box.style.left = box.style.top = box.style.bottom =
+        box.style.width = box.style.maxHeight = box.style.visibility = "";
+      return;
+    }
+    var anchorEl = box.parentElement.querySelector("input") || box.parentElement;
+    var anchor = anchorEl.getBoundingClientRect();
+    if (els.stockBody) {
+      var brect = els.stockBody.getBoundingClientRect();
+      box.style.visibility =
+        anchor.bottom < brect.top || anchor.top > brect.bottom ? "hidden" : "";
+    }
+    var vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    box.classList.add("is-float");
+    box.style.left = anchor.left + "px";
+    box.style.width = anchor.width + "px";
+    var below = vh - anchor.bottom - 8;
+    if (below >= 140 || below >= anchor.top - 8) {
+      box.style.top = anchor.bottom + 4 + "px";
+      box.style.bottom = "";
+      box.style.maxHeight = Math.min(240, Math.max(110, below)) + "px";
+    } else {
+      box.style.top = "";
+      box.style.bottom = vh - anchor.top + 4 + "px";
+      box.style.maxHeight = Math.min(240, Math.max(110, anchor.top - 8)) + "px";
+    }
+  }
+
+  function repositionFloatSuggests() {
+    root.querySelectorAll(".wa-stock__suggest.is-float").forEach(floatSuggest);
+  }
+
   function showSuggest(box, html) {
     box.innerHTML = html;
     box.hidden = false;
+    floatSuggest(box);
   }
 
   function hideSuggest(box) {
     box.hidden = true;
     box.innerHTML = "";
+    box.classList.remove("is-float");
+    box.style.left = box.style.top = box.style.bottom =
+      box.style.width = box.style.maxHeight = box.style.visibility = "";
   }
 
   var itemSearchTimer = null;
@@ -2480,7 +2523,17 @@
   if (els.stockDetailsToggle) {
     els.stockDetailsToggle.addEventListener("click", function () {
       setStockDetails(els.stockDetails.hidden);
+      repositionFloatSuggests();
     });
+  }
+  if (els.stockBody) {
+    els.stockBody.addEventListener("scroll", repositionFloatSuggests,
+      { passive: true });
+  }
+  window.addEventListener("resize", repositionFloatSuggests);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", repositionFloatSuggests);
+    window.visualViewport.addEventListener("scroll", repositionFloatSuggests);
   }
 
   // ------------------------------------------------------------------

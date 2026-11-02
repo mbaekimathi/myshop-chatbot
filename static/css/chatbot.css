@@ -1573,6 +1573,16 @@ html[data-theme="dark"] .comms {
   font-size: 0.8rem;
 }
 
+/* Mobile: JS pins body dropdowns to the input with fixed coordinates so
+   they float over the pinned footer instead of being clipped by scroll. */
+
+.wa-stock__suggest.is-float {
+  position: fixed;
+  top: auto;
+  right: auto;
+  z-index: 12;
+}
+
 .wa-stock__supplier { display: grid; gap: 0.4rem; }
 
 .wa-stock__error {

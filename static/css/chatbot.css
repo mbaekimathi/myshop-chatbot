@@ -2550,6 +2550,43 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
   background: var(--wa-panel-2);
 }
 
+/* Collapsible payment/client details — keeps the items list visible */
+
+.wa-stock__detailstoggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--wa-line);
+  border-radius: 10px;
+  background: var(--wa-panel);
+  color: var(--wa-muted);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.wa-stock__detailstoggle .lucide {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  transition: transform 0.15s ease;
+}
+
+.wa-stock__detailstoggle[aria-expanded="true"] .lucide {
+  transform: rotate(180deg);
+}
+
+.wa-stock__details {
+  display: grid;
+  gap: 0.6rem;
+}
+
 /* Per-line qty × price = total readout */
 
 .wa-stock-line__ltotal {

@@ -137,6 +137,9 @@
     stockSupplier: root.querySelector("[data-stock-supplier]"),
     stockPayment: root.querySelector("[data-stock-payment]"),
     stockClient: root.querySelector("[data-stock-client]"),
+    stockDetails: root.querySelector("[data-stock-details]"),
+    stockDetailsToggle: root.querySelector("[data-stock-detailstoggle]"),
+    stockDetailsToggleLabel: root.querySelector("[data-stock-detailstoggle-label]"),
     stockTradeKinds: root.querySelector("[data-stock-tradekinds]"),
     stockTradeHint: root.querySelector("[data-stock-tradehint]"),
     stockItemWrap: root.querySelector("[data-stock-itemwrap]"),
@@ -1403,6 +1406,14 @@
       : "Add the items the client is taking.";
   }
 
+  // The footer's payment/client block collapses so the items list keeps
+  // room on small screens — the toggle reopens it for detail entry.
+  function setStockDetails(open) {
+    if (!els.stockDetails || !els.stockDetailsToggle) return;
+    els.stockDetails.hidden = !open;
+    els.stockDetailsToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
   function openStock(mode) {
     var convo = findConvo(state.activeId);
     if (mode === "trade" && !me.trade_out && !me.trade_in) {
@@ -1424,6 +1435,13 @@
     els.stockSupplier.hidden = mode !== "stockin" && mode !== "expense";
     els.stockPayment.hidden = mode !== "sale";
     els.stockClient.hidden = mode !== "sale" && mode !== "trade";
+    if (els.stockDetailsToggle) {
+      var hasDetails = mode === "sale" || mode === "trade";
+      els.stockDetailsToggle.hidden = !hasDetails;
+      els.stockDetailsToggleLabel.textContent =
+        mode === "sale" ? "Payment & client" : "Client details";
+      setStockDetails(false);
+    }
     if (els.stockTradeKinds) els.stockTradeKinds.hidden = mode !== "trade";
     els.stockExpense.hidden = mode !== "expense";
     if (els.stockItemWrap) els.stockItemWrap.hidden = mode === "expense";
@@ -1923,11 +1941,13 @@
       var tradePhone = (els.stockClientPhone.value || "").trim();
       if (!tradeName) {
         stockError("Enter the client full name.");
+        setStockDetails(true);
         els.stockClientName.focus();
         return;
       }
       if (!tradePhone) {
         stockError("Enter the client phone number.");
+        setStockDetails(true);
         els.stockClientPhone.focus();
         return;
       }
@@ -2457,6 +2477,11 @@
   });
 
   els.stockSubmit.addEventListener("click", submitStock);
+  if (els.stockDetailsToggle) {
+    els.stockDetailsToggle.addEventListener("click", function () {
+      setStockDetails(els.stockDetails.hidden);
+    });
+  }
 
   // ------------------------------------------------------------------
   // Bot period picker — Day / Period / Month / Year from the calendar

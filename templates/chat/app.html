@@ -304,6 +304,12 @@
     </div>
 
     <div class="wa-stock__foot">
+      <button type="button" class="wa-stock__detailstoggle" data-stock-detailstoggle
+              hidden aria-expanded="false" aria-controls="wa-stock-details">
+        <span data-stock-detailstoggle-label>Payment &amp; client</span>
+        <i data-lucide="chevron-down" aria-hidden="true"></i>
+      </button>
+      <div class="wa-stock__details" id="wa-stock-details" data-stock-details hidden>
       <div class="wa-stock__supplier" data-stock-payment hidden>
         <p class="wa-stock__label">Payment <em>(required)</em></p>
         <select data-stock-kind>
@@ -336,6 +342,7 @@
           <input type="checkbox" data-stock-whatsapp checked>
           <span>Send to client's WhatsApp</span>
         </label>
+      </div>
       </div>
       <div class="wa-stock__total" data-stock-total hidden>
         <span>Total</span><b data-stock-total-val>KSh 0.00</b>
@@ -371,5 +378,5 @@
 
 {% block extra_js %}
 <script defer src="{% static 'js/vendor/html5-qrcode.min.js' %}"></script>
-<script defer src="{% static 'js/chatbot.js' %}?v=40"></script>
+<script defer src="{% static 'js/chatbot.js' %}?v=41"></script>
 {% endblock %}

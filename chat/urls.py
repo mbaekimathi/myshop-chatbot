@@ -6,6 +6,7 @@ app_name = "chat"
 
 urlpatterns = [
     path("", views.home, name="home"),
+    path("manifest.json", views.manifest, name="manifest"),
     path("login/", views.login_view, name="login"),
     path("logout/", views.logout_view, name="logout"),
     path("login/pick/", views.pick_shop, name="pick_shop"),

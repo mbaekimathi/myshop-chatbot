@@ -30,7 +30,6 @@ from .auth import (
 )
 from .models import Conversation, ConversationKind, Message, Participant
 from .myshop_models import (
-    CompanyProfile,
     Shop,
     ShopReceipt,
     ShopReceiptLine,
@@ -84,13 +83,7 @@ def _client_ip(request) -> str:
 
 
 def _company_name() -> str:
-    try:
-        row = CompanyProfile.objects.first()
-        if row and row.name.strip():
-            return row.name.strip()
-    except Exception:
-        pass
-    return "MY-SHOP"
+    return services.company_name()
 
 
 def _participants(convo: Conversation, me: Shop):
@@ -145,7 +138,7 @@ def _serialize_active(convo: Conversation, me: Shop, after_id: int = 0) -> dict:
             "online": True,
             "typing": False,
             "last_seen": "",
-            "name": services.BOT_NAME,
+            "name": services.bot_name(),
             "location": services.BOT_SUBTITLE,
             "read_up_to": 0,
         }
@@ -168,6 +161,45 @@ def home(request):
     if current_shop(request) is not None:
         return redirect("chat:app")
     return redirect("chat:login")
+
+
+@require_GET
+def manifest(request):
+    """PWA manifest — rendered dynamically so the install name follows the
+    company name set in MY-SHOP settings. Unauthenticated on purpose: manifest
+    fetches carry no credentials."""
+    name = services.app_name()
+    icons = [
+        {
+            "src": "/static/img/icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": purpose,
+        }
+        for purpose in ("any", "maskable")
+    ] + [
+        {
+            "src": "/static/img/icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": purpose,
+        }
+        for purpose in ("any", "maskable")
+    ]
+    return JsonResponse(
+        {
+            "name": name,
+            "short_name": name,
+            "description": "Shop-to-shop chat and business data assistant",
+            "start_url": "/chat/",
+            "scope": "/",
+            "display": "standalone",
+            "orientation": "portrait",
+            "background_color": "#0b141a",
+            "theme_color": "#00a884",
+            "icons": icons,
+        }
+    )
 
 
 def login_view(request):

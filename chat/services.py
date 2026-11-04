@@ -12,7 +12,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from .models import Conversation, ConversationKind, Message, MessageKind, Participant
-from .myshop_models import Shop
+from .myshop_models import CompanyProfile, Shop
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 ALLOWED_IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "gif"}
@@ -20,20 +20,41 @@ PRESENCE_WRITE_INTERVAL = 10  # seconds between last_seen_at writes
 ONLINE_WINDOW = 25  # seconds since last_seen_at counts as "online"
 TYPING_TTL = 4  # seconds a typing flag stays alive
 
-BOT_NAME = "MY-SHOP Assistant"
 BOT_SUBTITLE = "Business data helper"
-BOT_WELCOME = (
-    "Hi {shop}! I'm your MY-SHOP assistant.\n\n"
-    "Ask me about your business data, for example:\n"
-    "- *sales today* or *sales this week*\n"
-    "- *stock sugar* - on-hand quantity and price\n"
-    "- *low stock* - items running out\n"
-    "- *top sellers* - best movers this month\n"
-    "- *credit* - outstanding customer balances\n"
-    "- *expenses today*\n"
-    "- *receipt 00123*\n\n"
-    "Type *help* any time to see the full menu."
-)
+
+
+def company_name() -> str:
+    """Company name from MY-SHOP's settings (`shops_companyprofile`)."""
+    try:
+        row = CompanyProfile.objects.first()
+        if row and row.name.strip():
+            return row.name.strip()
+    except Exception:
+        pass
+    return "MY-SHOP"
+
+
+def app_name() -> str:
+    return f"{company_name()} Chat"
+
+
+def bot_name() -> str:
+    return f"{company_name()} Assistant"
+
+
+def bot_welcome(shop_name: str) -> str:
+    return (
+        f"Hi {shop_name}! I'm your {company_name()} assistant.\n\n"
+        "Ask me about your business data, for example:\n"
+        "- *sales today* or *sales this week*\n"
+        "- *stock sugar* - on-hand quantity and price\n"
+        "- *low stock* - items running out\n"
+        "- *top sellers* - best movers this month\n"
+        "- *credit* - outstanding customer balances\n"
+        "- *expenses today*\n"
+        "- *receipt 00123*\n\n"
+        "Type *help* any time to see the full menu."
+    )
 
 # ---------------------------------------------------------------------------
 # Shop directory
@@ -123,7 +144,7 @@ def get_or_create_bot(shop: Shop) -> Conversation:
         sender_shop_id=None,
         is_bot=True,
         kind=MessageKind.TEXT,
-        body=BOT_WELCOME.format(shop=shop.name),
+        body=bot_welcome(shop.name),
     )
     return convo
 
@@ -527,7 +548,7 @@ def serialize_conversation(convo: Conversation, me: Shop, shops_map: dict) -> di
     others = _group_others(convo, me) if group else []
 
     if convo.kind == ConversationKind.BOT:
-        title, subtitle, tone, bot = BOT_NAME, BOT_SUBTITLE, 2, True
+        title, subtitle, tone, bot = bot_name(), BOT_SUBTITLE, 2, True
         online = True
         last_seen = ""
         typing = False

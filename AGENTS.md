@@ -83,6 +83,13 @@ track the day's activity: **Incoming stock** (`stockin`), **Transfers**
   fulfilled) — `api_transfer_respond` updates that card's status and adds a
   note on accept/decline.
 
+## Branding
+App name comes from `services.company_name()` (`shops_companyprofile.name`,
+fallback "MY-SHOP") — `services.app_name()` = "<Company> Chat",
+`bot_name()` = "<Company> Assistant", `bot_welcome(shop)` the greeting.
+The PWA manifest is NOT a static file: `GET /manifest.json` → `views.manifest`
+renders it dynamically so the install name follows the company name.
+
 ## Realtime
 No websockets — `GET /api/poll/?conversation_id=&after_id=` returns the
 conversation list + new messages; the JS polls ~2.5s (8s hidden, exponential

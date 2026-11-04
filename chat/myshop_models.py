@@ -65,9 +65,11 @@ class ShopStock(models.Model):
     id = models.BigAutoField(primary_key=True)
     shop_id = models.BigIntegerField()
     item_id = models.BigIntegerField()
-    quantity = models.DecimalField(max_digits=12, decimal_places=3)
-    low_stock_threshold = models.PositiveIntegerField()
-    average_cost = models.DecimalField(max_digits=12, decimal_places=2)
+    quantity = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    low_stock_threshold = models.PositiveIntegerField(default=0)
+    average_cost = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

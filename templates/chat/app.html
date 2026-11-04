@@ -259,7 +259,7 @@
       </div>
 
       <div data-stock-itemwrap>
-      <p class="wa-stock__label">Items</p>
+      <p class="wa-stock__label">Items <span class="wa-stock__count" data-stock-count hidden>0</span></p>
       <div class="wa-stock__items" data-stock-items></div>
       <p class="wa-app__none" data-stock-empty>Add items with the search below.</p>
 
@@ -378,5 +378,5 @@
 
 {% block extra_js %}
 <script defer src="{% static 'js/vendor/html5-qrcode.min.js' %}"></script>
-<script defer src="{% static 'js/chatbot.js' %}?v=42"></script>
+<script defer src="{% static 'js/chatbot.js' %}?v=47"></script>
 {% endblock %}

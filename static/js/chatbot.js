@@ -120,6 +120,7 @@
     stockDestWrap: root.querySelector("[data-stock-dest-wrap]"),
     stockDest: root.querySelector("[data-stock-dest]"),
     stockItems: root.querySelector("[data-stock-items]"),
+    stockCount: root.querySelector("[data-stock-count]"),
     stockEmpty: root.querySelector("[data-stock-empty]"),
     stockItemInput: root.querySelector("[data-stock-item-input]"),
     stockItemSuggest: root.querySelector("[data-stock-item-suggest]"),
@@ -414,20 +415,126 @@
     );
   }
 
-  function tableCard(icon, title, head, body, foot) {
+  function tableCard(icon, title, head, body, foot, tableCls) {
     return (
       '<div class="wa-card"><div class="wa-card__head wa-card__head--in">' +
       '<i data-lucide="' + icon + '"></i><span>' + escapeHtml(title) +
       "</span></div>" +
-      '<div class="wa-card__tablewrap"><table class="wa-table"><thead><tr>' +
+      '<div class="wa-card__tablewrap"><table class="wa-table' +
+      (tableCls ? " " + tableCls : "") + '"><thead><tr>' +
       head.map(function (h) {
-        return "<th" + (h[1] ? ' class="n"' : "") + ">" + escapeHtml(h[0]) +
-          "</th>";
+        var hc = ((h[1] ? "n" : "") + " " + (h[2] || "")).trim();
+        return "<th" + (hc ? ' class="' + hc + '"' : "") + ">" +
+          escapeHtml(h[0]) + "</th>";
       }).join("") +
       "</tr></thead><tbody>" + body + "</tbody></table></div>" +
       (foot ? '<div class="wa-card__foot">' + foot + "</div>" : "") +
       "</div>"
     );
+  }
+
+  // Credits card — tappable customer name reveals their number (tap-to-call),
+  // the receipt's eye icon expands the bought lines in place.
+  function creditCustCell(r) {
+    var phone = (r.phone || "").trim();
+    return (
+      '<button class="wa-cust" type="button" data-custphone>' +
+      escapeHtml(r.customer) + "</button>" +
+      '<div class="wa-phone" hidden>' +
+      (phone
+        ? '<i data-lucide="phone"></i><a class="wa-link" href="tel:' +
+          escapeHtml(phone.replace(/[^+\d]/g, "")) + '">' +
+          escapeHtml(phone) + "</a>"
+        : '<span class="wa-phone__none">No phone on file</span>') +
+      "</div>"
+    );
+  }
+
+  function creditReceiptCell(r) {
+    return (
+      '<span class="wa-rcpt">' + escapeHtml(r.receipt) +
+      (r.rid
+        ? '<button class="wa-eyebtn" type="button" data-ritems="' + r.rid +
+          '" title="View items"><i data-lucide="eye"></i></button>'
+        : "") +
+      "</span>"
+    );
+  }
+
+  var receiptItemsCache = {};
+
+  function receiptItemsHtml(data) {
+    var rows = (data.items || []).map(function (it, i) {
+      var sn =
+        it.serials && it.serials.length
+          ? '<tr class="wa-tr--sn"><td></td><td colspan="4">' +
+            '<div class="wa-card__sns">' +
+            it.serials.map(escapeHtml).join(" · ") + "</div></td></tr>"
+          : "";
+      return (
+        '<tr><td class="n">' + (i + 1) + "</td><td>" +
+        escapeHtml(it.name) + '</td><td class="n">' + escapeHtml(it.qty) +
+        '</td><td class="n">' + escapeHtml(it.price) + '</td><td class="n">' +
+        escapeHtml(it.total) + "</td></tr>" + sn
+      );
+    }).join("");
+    var rc = data.receipt || {};
+    return (
+      '<div class="wa-ritems__head">Receipt ' +
+      escapeHtml(rc.number || "") + " · " + escapeHtml(rc.customer || "") +
+      "</div>" +
+      '<table class="wa-table wa-table--mini"><thead><tr><th>#</th>' +
+      "<th>Item</th><th class=\"n\">Qty</th><th class=\"n\">Price</th>" +
+      '<th class="n">Total</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="5">No lines on this receipt.</td></tr>') +
+      "</tbody></table>" +
+      '<div class="wa-ritems__foot"><b>' + escapeHtml(rc.total || "") +
+      "</b> · paid " + escapeHtml(rc.paid || "") + "</div>"
+    );
+  }
+
+  function toggleReceiptItems(btn) {
+    var tr = btn.closest("tr");
+    if (!tr || !tr.parentNode) return;
+    var next = tr.nextElementSibling;
+    if (next && next.classList.contains("wa-ritems")) {
+      next.hidden = !next.hidden;
+      return;
+    }
+    var rid = btn.dataset.ritems;
+    var detail = document.createElement("tr");
+    detail.className = "wa-ritems";
+    var td = document.createElement("td");
+    td.colSpan = 99;
+    var box = document.createElement("div");
+    box.className = "wa-ritems__box";
+    td.appendChild(box);
+    detail.appendChild(td);
+    tr.parentNode.insertBefore(detail, tr.nextSibling);
+
+    var cached = receiptItemsCache[rid];
+    if (cached) {
+      box.innerHTML = cached;
+      return;
+    }
+    box.textContent = "Loading…";
+    fetch("/api/receipts/" + rid + "/items/", { credentials: "same-origin" })
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        if (!resp.ok) {
+          box.innerHTML = '<span class="wa-ritems__err">' +
+            escapeHtml(resp.error || "Could not load items.") + "</span>";
+          return;
+        }
+        var html = receiptItemsHtml(resp);
+        receiptItemsCache[rid] = html;
+        box.innerHTML = html;
+        refreshIcons();
+      })
+      .catch(function () {
+        box.innerHTML =
+          '<span class="wa-ritems__err">Connection problem — try again.</span>';
+      });
   }
 
   function cardHtml(card, mine, msgId) {
@@ -484,16 +591,17 @@
     if (card.credits) {
       var cr = card.credits;
       var crows = (cr.rows || []).map(function (r, i) {
-        return "<tr><td class=\"n\">" + (i + 1) + "</td><td>" +
-          escapeHtml(r.customer) + "</td><td>" + escapeHtml(r.receipt) +
-          "</td><td class=\"n\">" + escapeHtml(r.balance) + "</td><td class=\"n\">" +
+        return '<tr><td class="n wa-cnum">' + (i + 1) + "</td><td>" +
+          creditCustCell(r) + "</td><td>" + creditReceiptCell(r) +
+          '</td><td class="n">' + escapeHtml(r.balance) + '</td><td class="n">' +
           escapeHtml(r.due || "—") + "</td></tr>";
       }).join("");
       return tableCard("hand-coins", "Outstanding credit" +
         (cr.label ? " · " + cr.label : ""), [
-        ["#"], ["Customer"], ["Receipt"], ["Balance", 1], ["Due", 1]
+        ["#", 0, "wa-cnum"], ["Customer"], ["Receipt"], ["Balance", 1],
+        ["Due", 1]
       ], crows, "<b>" + escapeHtml(cr.total) + "</b> across " + cr.count +
-        " receipts");
+        " receipts", "wa-table--credits");
     }
     if (card.expense) {
       var xp = card.expense;
@@ -647,9 +755,12 @@
       });
       var foot;
       if (t.status === "fulfilled") {
-        foot = '<div class="wa-card__foot is-in">Fulfilled — stock moved.</div>';
+        foot = '<div class="wa-card__foot is-in">Fulfilled — stock moved' +
+          (t.responded_by ? " · by " + escapeHtml(t.responded_by) : "") +
+          ".</div>";
       } else if (t.status === "declined") {
         foot = '<div class="wa-card__foot">Declined' +
+          (t.responded_by ? " by " + escapeHtml(t.responded_by) : "") +
           (t.response_note ? ": " + escapeHtml(t.response_note) : "") + "</div>";
       } else if (mine || t.readonly) {
         foot = '<div class="wa-card__foot">To ' + escapeHtml(t.to_shop) +
@@ -658,8 +769,12 @@
         foot =
           '<div class="wa-card__foot">Incoming from ' +
           escapeHtml(t.from_shop) +
-          " — type the amount you received, then Accept. " +
-          "A wrong amount won't confirm.</div>" +
+          " — type the amount you received and your staff code, then " +
+          "Accept. A wrong amount won't confirm.</div>" +
+          '<input class="wa-card__sninput" type="password" inputmode="numeric" ' +
+          'maxlength="6" autocomplete="off" spellcheck="false" ' +
+          'placeholder="Your 6-digit staff code" data-tcode="' +
+          t.movement_id + '">' +
           '<div class="wa-card__actions" data-tcard="' + t.movement_id + '">' +
           '<button type="button" class="wa-card__btn wa-card__btn--ok" data-taccept="' +
           t.movement_id + '">Accept</button>' +
@@ -777,6 +892,11 @@
       if (m.meta.confirmed && m.meta.confirmed.by) {
         inner += '<div class="wa-card__confirmed">✓ Confirmed by ' +
           escapeHtml(m.meta.confirmed.by) + "</div>";
+      }
+      if (m.meta.by) {
+        // Activity-feed cards name the staff member who ran the action.
+        inner += '<div class="wa-card__confirmed">by ' +
+          escapeHtml(m.meta.by) + "</div>";
       }
     } else if (m.kind === "image" && m.image_url) {
       inner = '<img class="wa-bubble__photo" src="' + escapeHtml(m.image_url) +
@@ -1577,8 +1697,15 @@
       var qtyCell = line.serials
         ? '<span class="wa-stock-line__have">' + line.serials.length +
           " SN</span>"
-        : '<input type="number" min="0" step="any" value="' +
-          escapeHtml(line.quantity) + '" data-line-qty="' + i + '">';
+        : '<span class="wa-stock-line__stepper">' +
+          '<button type="button" data-line-step="' + i + '" data-step="-1" ' +
+          'aria-label="Decrease quantity"><i data-lucide="minus"></i></button>' +
+          '<input type="number" min="0" step="any" value="' +
+          escapeHtml(line.quantity) + '" data-line-qty="' + i + '" ' +
+          'aria-label="Quantity">' +
+          '<button type="button" data-line-step="' + i + '" data-step="1" ' +
+          'aria-label="Increase quantity"><i data-lucide="plus"></i></button>' +
+          "</span>";
       var priceBits = "";
       if (priced) {
         priceBits =
@@ -1596,13 +1723,20 @@
           escapeHtml(lineTotalText(line)) + "</span>";
       }
       return '<div class="wa-stock-line" data-line="' + i + '">' +
+        '<div class="wa-stock-line__top">' +
         '<span class="wa-stock-line__name">' + escapeHtml(line.name) +
-        '</span><div class="wa-stock-line__ctrls">' + qtyCell + priceBits +
-        '<button type="button" class="wa-stock-line__remove" data-line-remove="' +
-        i + '" aria-label="Remove"><i data-lucide="x"></i></button></div></div>';
+        '</span><button type="button" class="wa-stock-line__remove" ' +
+        'data-line-remove="' + i +
+        '" aria-label="Remove"><i data-lucide="x"></i></button></div>' +
+        '<div class="wa-stock-line__ctrls">' + qtyCell + priceBits +
+        "</div></div>";
     }).join("");
     els.stockItems.innerHTML = rows;
     els.stockEmpty.hidden = state.stock.lines.length > 0;
+    if (els.stockCount) {
+      els.stockCount.hidden = !state.stock.lines.length;
+      els.stockCount.textContent = String(state.stock.lines.length);
+    }
     refreshStockTotal();
     refreshIcons();
   }
@@ -1665,9 +1799,13 @@
   }
 
   function showSuggest(box, html) {
-    box.innerHTML = html;
+    box.innerHTML =
+      '<div class="wa-stock__sugbar"><button type="button" ' +
+      'class="wa-stock__sugx" data-sugx aria-label="Close suggestions">' +
+      '<i data-lucide="x"></i></button></div>' + html;
     box.hidden = false;
     floatSuggest(box);
+    refreshIcons();
   }
 
   function hideSuggest(box) {
@@ -2427,6 +2565,28 @@
   els.stockAdd.addEventListener("click", addStockLine);
 
   els.stockItems.addEventListener("click", function (e) {
+    var step = e.target.closest("[data-line-step]");
+    if (step) {
+      var si = parseInt(step.dataset.lineStep, 10);
+      var line = state.stock.lines[si];
+      if (!line) return;
+      var next =
+        (parseFloat(line.quantity) || 0) + parseFloat(step.dataset.step, 10);
+      if (next <= 0) {
+        state.stock.lines.splice(si, 1);
+        renderStockLines();
+        return;
+      }
+      line.quantity = String(next);
+      var qinp =
+        els.stockItems.querySelector('[data-line-qty="' + si + '"]');
+      if (qinp) qinp.value = line.quantity;
+      var stot =
+        els.stockItems.querySelector('[data-line-ltotal="' + si + '"]');
+      if (stot) stot.textContent = lineTotalText(line);
+      refreshStockTotal();
+      return;
+    }
     var btn = e.target.closest("[data-line-remove]");
     if (!btn) return;
     state.stock.lines.splice(parseInt(btn.dataset.lineRemove, 10), 1);
@@ -2472,6 +2632,31 @@
         hideSuggest(els.stockClientPhoneSuggest);
       });
   });
+
+  // Suggestion dropdowns float over the next input — they stay
+  // dismissible via the × button, Escape, or a tap outside.
+  els.stockPanel.addEventListener("click", function (e) {
+    var x = e.target.closest("[data-sugx]");
+    if (!x) return;
+    var box = x.closest(".wa-stock__suggest");
+    if (box) hideSuggest(box);
+  });
+  els.stockPanel.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    root.querySelectorAll(".wa-stock__suggest:not([hidden])")
+      .forEach(hideSuggest);
+  });
+  document.addEventListener("pointerdown", function (e) {
+    root.querySelectorAll(".wa-stock__suggest:not([hidden])").forEach(
+      function (box) {
+        // Taps inside the dropdown or its own field keep it open.
+        if (box.parentElement && box.parentElement.contains(e.target)) {
+          return;
+        }
+        hideSuggest(box);
+      }
+    );
+  }, true);
 
   if (els.stockTradeKinds) {
     els.stockTradeKinds.addEventListener("change", function (e) {
@@ -2710,6 +2895,10 @@
 
   function respondTransfer(movementId, decision) {
     var payload = { decision: decision };
+    // Both accept and decline need a member's staff code — the movement
+    // records which employee responded.
+    var codeInp = root.querySelector('[data-tcode="' + movementId + '"]');
+    payload.staff_code = codeInp ? codeInp.value.trim() : "";
     if (decision === "accept") {
       var received = {};
       root.querySelectorAll('[data-rcv]').forEach(function (inp) {
@@ -2758,6 +2947,18 @@
     if (paInp) {
       e.preventDefault();
       confirmPending(paInp.dataset.pacode);
+      return;
+    }
+    var tcode = e.target.closest("[data-tcode]");
+    if (tcode) {
+      e.preventDefault();
+      respondTransfer(tcode.dataset.tcode, "accept");
+      return;
+    }
+    var treason = e.target.closest("[data-treason]");
+    if (treason) {
+      e.preventDefault();
+      respondTransfer(treason.dataset.treason, "decline");
       return;
     }
     var inp = e.target.closest("[data-rcvsn]");
@@ -2820,6 +3021,21 @@
   });
 
   els.stage.addEventListener("click", function (e) {
+    var custBtn = e.target.closest("[data-custphone]");
+    if (custBtn) {
+      var ph = custBtn.parentNode.querySelector(".wa-phone");
+      if (ph) ph.hidden = !ph.hidden;
+      refreshIcons();
+      return;
+    }
+
+    var eye = e.target.closest("[data-ritems]");
+    if (eye) {
+      e.preventDefault();
+      toggleReceiptItems(eye);
+      return;
+    }
+
     var bitems = e.target.closest("[data-bitems]");
     if (bitems) {
       e.preventDefault();
@@ -2853,11 +3069,17 @@
     }
   });
 
-  // Staff code entry on a pending card: Enter or the 6th digit confirms.
+  // Staff code entry on a pending card or an incoming transfer: the 6th
+  // digit submits (pending card confirms, transfer accepts).
   els.stage.addEventListener("input", function (e) {
     var inp = e.target.closest("[data-pacode]");
     if (inp && inp.value.trim().length === 6) {
       confirmPending(inp.dataset.pacode);
+      return;
+    }
+    var tcode = e.target.closest("[data-tcode]");
+    if (tcode && tcode.value.trim().length === 6) {
+      respondTransfer(tcode.dataset.tcode, "accept");
     }
   });
 

@@ -31,6 +31,11 @@ urlpatterns = [
     path("api/expenses/", views.api_expense, name="api_expense"),
     path("api/clients/search/", views.api_client_search, name="api_client_search"),
     path(
+        "api/receipts/<int:receipt_id>/items/",
+        views.api_receipt_items,
+        name="api_receipt_items",
+    ),
+    path(
         "api/conversations/<int:conversation_id>/transfer/",
         views.api_transfer,
         name="api_transfer",

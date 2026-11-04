@@ -16,7 +16,7 @@ from django.utils import timezone
 
 from . import services
 from .bot import reply_for
-from .models import ConversationKind, Message
+from .models import Conversation, ConversationKind, Message
 from .myshop_models import (
     Shop,
     Item,
@@ -691,7 +691,8 @@ class TransferBlindTests(ChatTestCase):
         msg, movement, _ = self._posted_card()
         line = StockMovementLine.objects.get(movement_id=movement.pk)
         stock_ops.respond_to_transfer(
-            self.shop_b, movement.pk, "accept", {str(line.pk): "3"}
+            self.shop_b, movement.pk, "accept", {str(line.pk): "3"},
+            employee_id=0,
         )
         # Mirror the view: the card meta gets the new status.
         meta = dict(msg.meta)
@@ -728,6 +729,176 @@ class TransferBlindTests(ChatTestCase):
             convo, self.shop_b, {self.shop_a.pk: self.shop_a}
         )
         self.assertEqual(data["last_message"]["card"], "")
+
+
+class TransferRespondCodeTests(ChatTestCase):
+    """The receiving shop accepts or declines with a member's 6-digit
+    staff code — the movement stores responded_by_id and the card/note
+    name the employee who handled it."""
+
+    EMPLOYEE_DDL = PendingConfirmTests.EMPLOYEE_DDL
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import User
+
+        with connection.cursor() as cur:
+            for ddl in self.EMPLOYEE_DDL:
+                cur.execute(ddl)
+            cur.execute("DELETE FROM employees_employeeprofile")
+            cur.execute(
+                "DELETE FROM employees_employeeprofile_assigned_shops"
+            )
+        member_user = User.objects.create_user(
+            username="memberb", first_name="Beta", last_name="Member"
+        )
+        outsider_user = User.objects.create_user(username="outsider")
+        with connection.cursor() as cur:
+            # Member of the receiving shop (shop_b).
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [2, "654321", member_user.pk, "shop_attendant", "active"],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile_assigned_shops "
+                "(employeeprofile_id, shop_id) VALUES (%s, %s)",
+                [2, self.shop_b.pk],
+            )
+            # Active employee not allocated to shop_b.
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [3, "100001", outsider_user.pk, "company_manager", "active"],
+            )
+        self.item = Item.objects.create(
+            category="Grocery", name="Sugar 1kg",
+            minimum_selling_price=Decimal("100"),
+            shop_price=Decimal("150"), stock=Decimal("40"),
+            low_stock_notify=False, low_stock_threshold=0,
+            is_suspended=False,
+        )
+        ShopStock.objects.create(
+            shop_id=self.shop_a.pk, item_id=self.item.pk,
+            quantity=Decimal("10"), low_stock_threshold=5,
+            average_cost=Decimal("80"),
+        )
+        ShopStock.objects.create(
+            shop_id=self.shop_b.pk, item_id=self.item.pk,
+            quantity=Decimal("0"), low_stock_threshold=5,
+            average_cost=Decimal("80"),
+        )
+        self.login(code="222222", password="pass-b")
+
+    def _make_transfer(self):
+        from . import stock as stock_ops
+
+        movement, lines = stock_ops.create_transfer(
+            self.shop_a,
+            self.shop_b,
+            [{"item_id": self.item.pk, "quantity": "3", "serials": []}],
+            employee_id=0,
+        )
+        movement_lines = list(
+            StockMovementLine.objects.filter(
+                movement_id=movement.pk
+            ).order_by("pk")
+        )
+        convo = services.get_or_create_direct(self.shop_a, self.shop_b)
+        msg = services.post_card(
+            convo,
+            self.shop_a,
+            "Stock transfer → Beta Mart: 3× Sugar 1kg",
+            stock_ops.transfer_card(
+                movement, self.shop_a, self.shop_b, movement_lines
+            ),
+        )
+        msg.client_tag = f"transfer:{movement.pk}"
+        msg.save(update_fields=["client_tag"])
+        return movement, movement_lines[0], convo
+
+    def _respond(self, movement, payload):
+        return self.client.post(
+            reverse("chat:api_transfer_respond", args=[movement.pk]),
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+    def test_accept_without_code_is_rejected(self):
+        movement, line, _ = self._make_transfer()
+        resp = self._respond(
+            movement,
+            {"decision": "accept", "received": {str(line.pk): "3"}},
+        )
+        self.assertFalse(resp.json()["ok"])
+        self.assertIn("member of this shop", resp.json()["error"])
+        movement.refresh_from_db()
+        self.assertEqual(movement.request_status, "pending")
+        self.assertIsNone(movement.responded_by_id)
+
+    def test_non_member_code_is_rejected(self):
+        movement, line, _ = self._make_transfer()
+        resp = self._respond(
+            movement,
+            {
+                "decision": "accept",
+                "received": {str(line.pk): "3"},
+                "staff_code": "100001",
+            },
+        )
+        self.assertFalse(resp.json()["ok"])
+        self.assertIn("member of this shop", resp.json()["error"])
+        movement.refresh_from_db()
+        self.assertEqual(movement.request_status, "pending")
+
+    def test_accept_records_responder(self):
+        movement, line, convo = self._make_transfer()
+        resp = self._respond(
+            movement,
+            {
+                "decision": "accept",
+                "received": {str(line.pk): "3"},
+                "staff_code": "654321",
+            },
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        movement.refresh_from_db()
+        self.assertEqual(movement.request_status, "fulfilled")
+        self.assertEqual(movement.responded_by_id, 2)
+        self.assertEqual(
+            data["card_meta"]["transfer"]["responded_by"], "Beta Member"
+        )
+        note = Message.objects.filter(conversation=convo).order_by("-id")[0]
+        self.assertIn("by Beta Member", note.body)
+        # The received stock actually landed at shop_b.
+        self.assertEqual(
+            ShopStock.objects.get(
+                shop_id=self.shop_b.pk, item_id=self.item.pk
+            ).quantity,
+            Decimal("3.000"),
+        )
+
+    def test_decline_records_responder(self):
+        movement, line, convo = self._make_transfer()
+        resp = self._respond(
+            movement,
+            {
+                "decision": "decline",
+                "reason": "wrong items sent",
+                "staff_code": "654321",
+            },
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        movement.refresh_from_db()
+        self.assertEqual(movement.request_status, "declined")
+        self.assertEqual(movement.responded_by_id, 2)
+        self.assertEqual(movement.response_note, "wrong items sent")
+        note = Message.objects.filter(conversation=convo).order_by("-id")[0]
+        self.assertIn("declined by Beta Member", note.body)
 
 
 class GroupTests(ChatTestCase):
@@ -1348,3 +1519,266 @@ class ExpenseTests(ChatTestCase):
         expense = Expense.objects.get()
         self.assertEqual(expense.created_by_id, 2)
         self.assertIn("expense", data["message"]["meta"])
+
+
+class ActivityFeedTests(ChatTestCase):
+    """Completed stock-in/transfers/trades/expenses also post a card into
+    shared all-shops feed groups (Incoming stock / Transfers / Trades /
+    Expenses) so everyone can track the day's activity — each feed card
+    names the staff member who ran the action (`meta.by`)."""
+
+    EMPLOYEE_DDL = PendingConfirmTests.EMPLOYEE_DDL
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import User
+
+        with connection.cursor() as cur:
+            for ddl in self.EMPLOYEE_DDL:
+                cur.execute(ddl)
+            cur.execute("DELETE FROM employees_employeeprofile")
+            cur.execute(
+                "DELETE FROM employees_employeeprofile_assigned_shops"
+            )
+        member_a = User.objects.create_user(
+            username="membera", first_name="Member", last_name="One"
+        )
+        member_b = User.objects.create_user(
+            username="memberb", first_name="Beta", last_name="Member"
+        )
+        with connection.cursor() as cur:
+            # Non-member manager (staff session) — only pending requests.
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [1, "100001", None, "company_manager", "active"],
+            )
+            # Members of shop_a / shop_b whose codes complete actions.
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [2, "654321", member_a.pk, "shop_attendant", "active"],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile_assigned_shops "
+                "(employeeprofile_id, shop_id) VALUES (%s, %s)",
+                [2, self.shop_a.pk],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [3, "654322", member_b.pk, "shop_attendant", "active"],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile_assigned_shops "
+                "(employeeprofile_id, shop_id) VALUES (%s, %s)",
+                [3, self.shop_b.pk],
+            )
+        self.item = Item.objects.create(
+            category="Grocery", name="Sugar 1kg",
+            minimum_selling_price=Decimal("100"),
+            shop_price=Decimal("150"), stock=Decimal("40"),
+            low_stock_notify=False, low_stock_threshold=0,
+            is_suspended=False,
+        )
+        self.stock = ShopStock.objects.create(
+            shop_id=self.shop_a.pk, item_id=self.item.pk,
+            quantity=Decimal("10"), low_stock_threshold=5,
+            average_cost=Decimal("80"),
+        )
+        self.login()
+
+    def feed(self, activity):
+        return Conversation.objects.get(
+            kind=ConversationKind.GROUP,
+            pair_key="activity:" + activity,
+        )
+
+    def post_stockin(self, **over):
+        data = {
+            "supplier_name": "ACME Traders",
+            "supplier_phone": "0712 345 678",
+            "staff_code": "654321",
+            "lines": [
+                {"item_id": self.item.pk, "quantity": "2", "serials": []}
+            ],
+        }
+        data.update(over)
+        return self.client.post(
+            reverse("chat:api_stock_in"),
+            data=json.dumps(data),
+            content_type="application/json",
+        )
+
+    def test_stockin_posts_to_incoming_feed(self):
+        resp = self.post_stockin()
+        self.assertTrue(resp.json()["ok"])
+        convo = self.feed("stockin")
+        self.assertEqual(convo.name, "Incoming stock")
+        # Every active shop rides along — the feed is the shared log.
+        self.assertEqual(
+            {p.shop_id for p in convo.participants.all()},
+            {self.shop_a.pk, self.shop_b.pk},
+        )
+        msg = convo.messages.get()
+        self.assertEqual(msg.sender_shop_id, self.shop_a.pk)
+        self.assertIn("stock_in", msg.meta)
+        self.assertEqual(msg.meta["by"], "Member One")
+        self.assertIn("Stock received", msg.body)
+        # The shop's own Assistant thread still gets its private card.
+        bot = services.get_or_create_bot(self.shop_a)
+        self.assertEqual(bot.messages.count(), 2)  # welcome + card
+
+    def test_transfer_feed_card_and_resolution(self):
+        resp = self.client.post(
+            reverse("chat:api_transfers"),
+            data=json.dumps(
+                {
+                    "destination_shop_id": self.shop_b.pk,
+                    "staff_code": "654321",
+                    "lines": [
+                        {
+                            "item_id": self.item.pk,
+                            "quantity": "3",
+                            "serials": [],
+                        }
+                    ],
+                }
+            ),
+            content_type="application/json",
+        )
+        self.assertTrue(resp.json()["ok"])
+        convo = self.feed("transfer")
+        msg = convo.messages.get()
+        self.assertEqual(msg.sender_shop_id, self.shop_a.pk)
+        transfer = msg.meta["transfer"]
+        self.assertTrue(transfer["readonly"])
+        self.assertEqual(transfer["status"], "pending")
+        self.assertEqual(msg.meta["by"], "Member One")
+        movement_id = transfer["movement_id"]
+        self.assertEqual(msg.client_tag, f"transfer-feed:{movement_id}")
+
+        # The receiving shop accepts — the feed card resolves in place
+        # and a note lands in the same group.
+        client_b = Client()
+        client_b.post(
+            reverse("chat:login"),
+            {"login_code": "222222", "password": "pass-b"},
+        )
+        line = StockMovementLine.objects.get(movement_id=movement_id)
+        resp = client_b.post(
+            reverse("chat:api_transfer_respond", args=[movement_id]),
+            data=json.dumps(
+                {
+                    "decision": "accept",
+                    "received": {str(line.pk): "3"},
+                    "staff_code": "654322",
+                }
+            ),
+            content_type="application/json",
+        )
+        self.assertTrue(resp.json()["ok"])
+        msg.refresh_from_db()
+        transfer = msg.meta["transfer"]
+        self.assertEqual(transfer["status"], "fulfilled")
+        self.assertEqual(transfer["responded_by"], "Beta Member")
+        note = convo.messages.order_by("-id").first()
+        self.assertNotEqual(note.pk, msg.pk)
+        self.assertEqual(note.sender_shop_id, self.shop_b.pk)
+        self.assertIn("confirmed by Beta Member", note.body)
+
+    def test_trade_posts_to_trade_feed(self):
+        resp = self.client.post(
+            reverse("chat:api_sale"),
+            data=json.dumps(
+                {
+                    "kind": "trade_out",
+                    "client_name": "Joe",
+                    "client_phone": "0712 345 678",
+                    "staff_code": "654321",
+                    "lines": [
+                        {
+                            "item_id": self.item.pk,
+                            "quantity": "2",
+                            "serials": [],
+                        }
+                    ],
+                }
+            ),
+            content_type="application/json",
+        )
+        self.assertTrue(resp.json()["ok"])
+        msg = self.feed("trade").messages.get()
+        self.assertEqual(msg.sender_shop_id, self.shop_a.pk)
+        self.assertEqual(msg.meta["sale"]["kind"], "trade_out")
+        self.assertEqual(msg.meta["by"], "Member One")
+
+    def test_expense_posts_to_expense_feed(self):
+        resp = self.client.post(
+            reverse("chat:api_expense"),
+            data=json.dumps(
+                {
+                    "category": "transport",
+                    "name": "Fuel",
+                    "amount": "500",
+                    "payment_status": "paid",
+                    "supplier_name": "Shell Station",
+                    "supplier_phone": "0712 345 678",
+                    "staff_code": "654321",
+                }
+            ),
+            content_type="application/json",
+        )
+        self.assertTrue(resp.json()["ok"])
+        convo = self.feed("expense")
+        msg = convo.messages.get()
+        self.assertIn("expense", msg.meta)
+        self.assertEqual(msg.meta["by"], "Member One")
+        self.assertIn("FUEL", msg.body)
+
+    def test_pending_confirm_posts_to_feed(self):
+        """A request confirmed by a member still lands in the shared
+        feed — named for the member who confirmed it."""
+        session = self.client.session
+        session["chatbot_employee_id"] = 1
+        session.save()
+        resp = self.post_stockin(staff_code="")
+        self.assertTrue(resp.json()["pending"])
+        msg = Message.objects.order_by("-id").first()
+        resp = self.client.post(
+            reverse("chat:api_pending_confirm", args=[msg.pk]),
+            data=json.dumps({"staff_code": "654321"}),
+            content_type="application/json",
+        )
+        self.assertTrue(resp.json()["ok"])
+        feed_msg = self.feed("stockin").messages.get()
+        self.assertIn("stock_in", feed_msg.meta)
+        self.assertEqual(feed_msg.meta["by"], "Member One")
+        self.assertEqual(feed_msg.sender_shop_id, self.shop_a.pk)
+
+    def test_feed_group_is_separate_from_user_groups(self):
+        # A user group may share the name — the feed is keyed, not named.
+        user_group = services.create_group(
+            self.shop_a, "Expenses", [self.shop_b]
+        )
+        self.client.post(
+            reverse("chat:api_expense"),
+            data=json.dumps(
+                {
+                    "category": "transport",
+                    "name": "Fuel",
+                    "amount": "500",
+                    "payment_status": "paid",
+                    "supplier_name": "Shell Station",
+                    "supplier_phone": "0712 345 678",
+                    "staff_code": "654321",
+                }
+            ),
+            content_type="application/json",
+        )
+        feed = self.feed("expense")
+        self.assertNotEqual(feed.pk, user_group.pk)
+        self.assertEqual(user_group.messages.count(), 1)  # system msg only

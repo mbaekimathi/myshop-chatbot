@@ -35,6 +35,13 @@ serialize). A shop member's staff code on
 If a valid member code is typed directly in the stock panel it executes
 immediately (no pending card).
 
+Accepting or declining an incoming transfer
+(`POST /api/transfers/<id>/respond/` → `stock.respond_to_transfer`) also
+needs the 6-digit code of a member of the *receiving* shop
+(`verify_employee_code(require_member=True)`) — the employee id lands on
+`items_stockmovement.responded_by_id` and the card meta `responded_by`
+names who confirmed/declined.
+
 Sales, credit sales and quotations are exempt (`api_sale`): a staff session
 completes them under its own employee profile when no code is typed, and a
 typed code only needs to be an *active* employee (`require_member=False`),
@@ -59,6 +66,22 @@ MY-SHOP has no enable flag for it. `POST /api/expenses/` →
 (paid/partial/unpaid), required supplier name+phone upserted into
 `shops_expensesupplier`. Member-confirmation gating applies like
 stock-in/transfers.
+
+## Activity feeds
+Shared all-shops feed groups auto-accumulate completed actions so anyone can
+track the day's activity: **Incoming stock** (`stockin`), **Transfers**
+(`transfer`), **Trades** (`trade`), **Expenses** (`expense`).
+- `services.activity_conversation(kind)` get-or-creates the group — identified
+  by `pair_key="activity:<kind>"` (never collides with user groups, which have
+  no pair_key) — and syncs every active shop in as a participant.
+- `views._activity_post(...)` mirrors the same card into the feed with
+  `meta.by` = the staff member's name (`stock_ops.employee_label` on the
+  movement/receipt/expense `created_by_id`, or the pending-card confirmer);
+  chatbot.js renders it as a "by …" byline under the card.
+- Transfers post a **readonly** card on send (tagged
+  `transfer-feed:<movement_id>`; the receiving shop still sees it blind until
+  fulfilled) — `api_transfer_respond` updates that card's status and adds a
+  note on accept/decline.
 
 ## Realtime
 No websockets — `GET /api/poll/?conversation_id=&after_id=` returns the

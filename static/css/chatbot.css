@@ -1573,6 +1573,41 @@ html[data-theme="dark"] .comms {
   font-size: 0.8rem;
 }
 
+/* Dismiss bar — the dropdown floats over the next input, so users need an
+   explicit way to close it and reach what's underneath. */
+.wa-stock__sugbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.15rem 0.25rem;
+  background: var(--wa-panel);
+  border-bottom: 1px solid var(--wa-line);
+}
+
+.wa-stock__sugx {
+  display: grid;
+  place-items: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--wa-muted);
+  cursor: pointer;
+}
+
+.wa-stock__sugx:hover {
+  background: var(--wa-panel-2);
+  color: var(--wa-ink);
+}
+
+.wa-stock__sugx .lucide {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
 /* Mobile: JS pins body dropdowns to the input with fixed coordinates so
    they float over the pinned footer instead of being clipped by scroll. */
 
@@ -2191,6 +2226,102 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
 
 .wa-table td:first-child { color: var(--wa-muted); width: 1.6rem; }
 
+/* Credits card — tappable customer name + receipt items peek */
+
+.wa-cust {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--wa-send);
+  cursor: pointer;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.wa-cust:hover { text-decoration: underline; }
+
+.wa-phone {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.12rem;
+  font-size: 0.74rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.wa-phone[hidden] { display: none; }
+
+.wa-phone .lucide {
+  width: 0.8rem;
+  height: 0.8rem;
+  color: var(--wa-muted);
+  flex-shrink: 0;
+}
+
+.wa-phone__none { color: var(--wa-muted); font-style: italic; }
+
+.wa-rcpt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.wa-eyebtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--wa-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.wa-eyebtn:hover {
+  color: var(--wa-send);
+  background: color-mix(in srgb, var(--wa-send) 12%, transparent);
+}
+
+.wa-eyebtn .lucide { width: 0.85rem; height: 0.85rem; }
+
+.wa-ritems > td {
+  padding: 0.35rem 0.45rem;
+  background: color-mix(in srgb, var(--wa-panel-2) 70%, transparent);
+}
+
+.wa-ritems__box { font-size: 0.76rem; color: var(--wa-muted); }
+
+.wa-ritems__head {
+  margin-bottom: 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--wa-muted);
+}
+
+.wa-ritems__foot {
+  margin-top: 0.25rem;
+  font-size: 0.72rem;
+  color: var(--wa-muted);
+}
+
+.wa-ritems__err { color: var(--danger-text, #c0392b); }
+
+.wa-table--mini { min-width: 0; font-size: 0.74rem; }
+
+.wa-table--mini thead th { position: static; }
+
+.wa-table--mini td { padding: 0.2rem 0.35rem; }
+
 /* Bot stat cards + movement badges */
 
 .wa-stats { display: grid; gap: 0.15rem; }
@@ -2277,6 +2408,10 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
   .wa-card { min-width: 0; }
   .wa-table { min-width: 12rem; font-size: 0.74rem; }
   .wa-table td, .wa-table thead th { padding: 0.24rem 0.35rem; }
+
+  /* Credits card fits narrow bubbles: drop the row index, keep taps fat */
+  .wa-table--credits .wa-cnum { display: none; }
+  .wa-eyebtn { width: 1.5rem; height: 1.5rem; }
 
   /* Floating action buttons — tighter to the edge, clear of composer */
   .wa-fabs {
@@ -3104,4 +3239,303 @@ html[data-theme="dark"] .install-toast__close:hover { background: rgba(134, 150,
 @media (max-width: 420px) {
   .install-toast { flex-wrap: wrap; }
   .install-toast__btn { order: 4; flex: 1; }
+}
+
+/* ==========================================================================
+   Cart refresh — modern item rows, steppers, per-breakpoint panel fit.
+   Applies to every stock panel mode: sale, stock-in, transfer, expense,
+   trade and quickin.
+   ========================================================================== */
+
+/* Panel slides in over the list pane */
+.wa-stock:not([hidden]) { animation: wa-stock-in 0.18s ease-out; }
+@keyframes wa-stock-in {
+  from { transform: translateX(-4%); opacity: 0.4; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* Tablet — roomier sheet than the chat list it covers */
+@media (min-width: 640px) and (max-width: 1199px) {
+  .wa-stock {
+    width: clamp(17.5rem, 46vw, 22rem);
+    box-shadow: 14px 0 36px rgba(10, 30, 32, 0.16);
+  }
+}
+
+/* Desktop — right-docked rail a touch wider for the stepper row */
+@media (min-width: 1200px) {
+  .wa-stock:not([hidden]) {
+    width: min(22.5rem, 33%);
+    animation-name: wa-stock-in-r;
+  }
+  .wa-app:has(.wa-stock:not([hidden])) .wa-app__shell {
+    margin-right: min(22.5rem, 33%);
+  }
+  @keyframes wa-stock-in-r {
+    from { transform: translateX(4%); opacity: 0.4; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+}
+
+/* Tidy scrollbar while the cart scrolls under the pinned footer */
+.wa-stock__body {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--wa-muted) 40%, transparent)
+    transparent;
+}
+
+/* Items section — label + list + add form stack evenly */
+.wa-stock [data-stock-itemwrap] {
+  display: grid;
+  gap: 0.5rem;
+}
+
+/* Items count chip on the section label */
+.wa-stock__count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  margin-left: auto;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--wa-send);
+  color: #fff;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+/* ------------------------------------------------------------------
+   Cart line — a small card: name + remove on top, controls below
+   ------------------------------------------------------------------ */
+
+.wa-stock__items { gap: 0.5rem; }
+
+.wa-stock-line + .wa-stock-line { margin-top: 0; }
+
+.wa-stock-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.45rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--wa-line);
+  border-radius: 12px;
+  background: var(--wa-panel);
+  box-shadow: 0 1px 2px rgba(11, 20, 26, 0.05);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+html[data-theme="dark"] .wa-stock-line {
+  background: color-mix(in srgb, var(--wa-panel-2) 55%, transparent);
+}
+
+.wa-stock-line:hover {
+  border-color: color-mix(in srgb, var(--wa-send) 40%, var(--wa-line));
+}
+
+.wa-stock-line:focus-within {
+  border-color: var(--wa-send);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--wa-send) 15%, transparent);
+}
+
+.wa-stock-line__top {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.wa-stock-line__name {
+  flex: 1 1 auto;
+  font-size: 0.87rem;
+}
+
+.wa-stock-line__remove { flex: 0 0 auto; }
+
+/* Controls row: stepper / SN chip × price = line total */
+.wa-stock-line__ctrls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.45rem;
+  min-width: 0;
+}
+
+/* Pill stepper around the qty input */
+.wa-stock-line__stepper {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--wa-line);
+  border-radius: 999px;
+  background: var(--wa-panel-2);
+  overflow: hidden;
+}
+
+.wa-stock-line__stepper button {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  border: 0;
+  background: transparent;
+  color: var(--wa-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.wa-stock-line__stepper button:hover {
+  background: color-mix(in srgb, var(--wa-send) 12%, transparent);
+  color: var(--wa-send);
+}
+
+.wa-stock-line__stepper button:active { transform: scale(0.92); }
+.wa-stock-line__stepper button .lucide { width: 0.8rem; height: 0.8rem; }
+
+/* Beats the generic .wa-stock-line input[type="number"] sizing */
+.wa-stock-line .wa-stock-line__stepper input[type="number"] {
+  flex: 0 0 auto;
+  width: 2.7rem;
+  min-width: 0;
+  padding: 0.32rem 0.1rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--wa-ink);
+  font-size: 0.85rem;
+  font-weight: 800;
+  text-align: center;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.wa-stock-line .wa-stock-line__stepper input[type="number"]:focus {
+  outline: none;
+  background: color-mix(in srgb, var(--wa-send) 8%, transparent);
+}
+
+/* Price input — same field language as the stepper */
+.wa-stock-line input[type="number"].wa-stock-line__price {
+  flex: 0 1 auto;
+  width: 5rem;
+  min-width: 4.2rem;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--wa-line);
+  border-radius: 999px;
+  background: var(--wa-panel-2);
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.wa-stock-line input[type="number"].wa-stock-line__price:focus {
+  outline: none;
+  border-color: var(--wa-send);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--wa-send) 18%, transparent);
+}
+
+.wa-stock-line__op { font-size: 0.78rem; }
+
+/* Serial-tracked qty chip */
+.wa-stock-line__have {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--wa-send) 10%, transparent);
+  color: var(--wa-send);
+  font-size: 0.72rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.wa-stock-line__ltotal {
+  flex: 1 1 auto;
+  min-width: 3.5rem;
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: var(--wa-send);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Very narrow — let the total drop to its own right-aligned row */
+@media (max-width: 399px) {
+  .wa-stock-line__ltotal { flex-basis: 100%; }
+}
+
+/* ------------------------------------------------------------------
+   Add-item card, supplier/expense cards — consistent rounded panels
+   ------------------------------------------------------------------ */
+
+.wa-stock__add,
+.wa-stock__supplier {
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--wa-panel-2) 55%, transparent);
+}
+
+.wa-stock__add:focus-within,
+.wa-stock__supplier:focus-within {
+  border-color: color-mix(in srgb, var(--wa-send) 35%, var(--wa-line));
+}
+
+/* Expense amount reads like a money field */
+.wa-stock__amount { border-radius: 12px; }
+.wa-stock__amount input { font-size: 1rem; font-weight: 800; }
+
+/* Add button fills the card and stays thumb-friendly */
+.wa-stock__add .wa-chip--send { border-radius: 10px; }
+
+/* ------------------------------------------------------------------
+   Pinned footer — total pill, staff code, submit
+   ------------------------------------------------------------------ */
+
+.wa-stock__foot {
+  box-shadow: 0 -6px 18px rgba(11, 20, 26, 0.06);
+}
+
+.wa-stock__total {
+  padding: 0.65rem 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--wa-send) 28%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--wa-send) 7%, var(--wa-panel));
+}
+
+.wa-stock__total b { color: var(--wa-ink); font-size: 1.05rem; }
+
+html[data-theme="dark"] .wa-stock__total {
+  background: color-mix(in srgb, var(--wa-send) 12%, transparent);
+}
+
+.wa-stock__send { border-radius: 12px; }
+
+/* ------------------------------------------------------------------
+   Mobile — keep >=16px on editable inputs (iOS zoom guard) and let the
+   controls row wrap cleanly on the narrowest screens
+   ------------------------------------------------------------------ */
+
+@media (max-width: 639px) {
+  .wa-stock-line .wa-stock-line__stepper input[type="number"] {
+    width: 3.1rem;
+    font-size: 16px;
+  }
+
+  .wa-stock-line input[type="number"].wa-stock-line__price {
+    font-size: 16px;
+    width: 5.4rem;
+  }
+
+  .wa-stock__body { padding: 0.7rem 0.75rem 1rem; }
+}
+
+@media (max-width: 480px) {
+  .wa-stock-line__ctrls { gap: 0.3rem 0.4rem; }
+  .wa-stock-line input[type="number"].wa-stock-line__price { width: 4.9rem; }
 }

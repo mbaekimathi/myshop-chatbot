@@ -85,20 +85,125 @@
     );
   }
 
-  function tableCard(icon, title, head, body, foot) {
+  function tableCard(icon, title, head, body, foot, tableCls) {
     return (
       '<div class="wa-card"><div class="wa-card__head wa-card__head--in">' +
       '<i data-lucide="' + icon + '"></i><span>' + esc(title) +
       "</span></div>" +
-      '<div class="wa-card__tablewrap"><table class="wa-table"><thead><tr>' +
+      '<div class="wa-card__tablewrap"><table class="wa-table' +
+      (tableCls ? " " + tableCls : "") + '"><thead><tr>' +
       head.map(function (h) {
-        return "<th" + (h[1] ? ' class="n"' : "") + ">" + esc(h[0]) +
+        var hc = ((h[1] ? "n" : "") + " " + (h[2] || "")).trim();
+        return "<th" + (hc ? ' class="' + hc + '"' : "") + ">" + esc(h[0]) +
           "</th>";
       }).join("") +
       "</tr></thead><tbody>" + body + "</tbody></table></div>" +
       (foot ? '<div class="wa-card__foot">' + foot + "</div>" : "") +
       "</div>"
     );
+  }
+
+  // Credits card — tappable customer name reveals their number (tap-to-call),
+  // the receipt's eye icon expands the bought lines in place.
+  function creditCustCell(r) {
+    var phone = (r.phone || "").trim();
+    return (
+      '<button class="wa-cust" type="button" data-custphone>' +
+      esc(r.customer) + "</button>" +
+      '<div class="wa-phone" hidden>' +
+      (phone
+        ? '<i data-lucide="phone"></i><a class="wa-link" href="tel:' +
+          esc(phone.replace(/[^+\d]/g, "")) + '">' + esc(phone) + "</a>"
+        : '<span class="wa-phone__none">No phone on file</span>') +
+      "</div>"
+    );
+  }
+
+  function creditReceiptCell(r) {
+    return (
+      '<span class="wa-rcpt">' + esc(r.receipt) +
+      (r.rid
+        ? '<button class="wa-eyebtn" type="button" data-ritems="' + r.rid +
+          '" title="View items"><i data-lucide="eye"></i></button>'
+        : "") +
+      "</span>"
+    );
+  }
+
+  var receiptItemsCache = {};
+
+  function receiptItemsHtml(data) {
+    var rows = (data.items || []).map(function (it, i) {
+      var sn =
+        it.serials && it.serials.length
+          ? '<tr class="wa-tr--sn"><td></td><td colspan="4">' +
+            '<div class="wa-card__sns">' +
+            it.serials.map(esc).join(" · ") + "</div></td></tr>"
+          : "";
+      return (
+        '<tr><td class="n">' + (i + 1) + "</td><td>" +
+        esc(it.name) + '</td><td class="n">' + esc(it.qty) +
+        '</td><td class="n">' + esc(it.price) + '</td><td class="n">' +
+        esc(it.total) + "</td></tr>" + sn
+      );
+    }).join("");
+    var rc = data.receipt || {};
+    return (
+      '<div class="wa-ritems__head">Receipt ' +
+      esc(rc.number || "") + " · " + esc(rc.customer || "") +
+      "</div>" +
+      '<table class="wa-table wa-table--mini"><thead><tr><th>#</th>' +
+      "<th>Item</th><th class=\"n\">Qty</th><th class=\"n\">Price</th>" +
+      '<th class="n">Total</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="5">No lines on this receipt.</td></tr>') +
+      "</tbody></table>" +
+      '<div class="wa-ritems__foot"><b>' + esc(rc.total || "") +
+      "</b> · paid " + esc(rc.paid || "") + "</div>"
+    );
+  }
+
+  function toggleReceiptItems(btn) {
+    var tr = btn.closest("tr");
+    if (!tr || !tr.parentNode) return;
+    var next = tr.nextElementSibling;
+    if (next && next.classList.contains("wa-ritems")) {
+      next.hidden = !next.hidden;
+      return;
+    }
+    var rid = btn.dataset.ritems;
+    var detail = document.createElement("tr");
+    detail.className = "wa-ritems";
+    var td = document.createElement("td");
+    td.colSpan = 99;
+    var box = document.createElement("div");
+    box.className = "wa-ritems__box";
+    td.appendChild(box);
+    detail.appendChild(td);
+    tr.parentNode.insertBefore(detail, tr.nextSibling);
+
+    var cached = receiptItemsCache[rid];
+    if (cached) {
+      box.innerHTML = cached;
+      return;
+    }
+    box.textContent = "Loading…";
+    fetch("/api/receipts/" + rid + "/items/", { credentials: "same-origin" })
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        if (!resp.ok) {
+          box.innerHTML = '<span class="wa-ritems__err">' +
+            esc(resp.error || "Could not load items.") + "</span>";
+          return;
+        }
+        var html = receiptItemsHtml(resp);
+        receiptItemsCache[rid] = html;
+        box.innerHTML = html;
+        refreshIcons();
+      })
+      .catch(function () {
+        box.innerHTML =
+          '<span class="wa-ritems__err">Connection problem — try again.</span>';
+      });
   }
 
   function cardHtml(card) {
@@ -129,17 +234,18 @@
     if (card.credits) {
       var cr = card.credits;
       var crows = (cr.rows || []).map(function (r, i) {
-        return '<tr><td class="n">' + (i + 1) + "</td><td>" +
-          esc(r.customer) + "</td><td>" + esc(r.shop || "") +
-          "</td><td>" + esc(r.receipt) +
+        return '<tr><td class="n wa-cnum">' + (i + 1) + "</td><td>" +
+          creditCustCell(r) + "</td><td>" + esc(r.shop || "") +
+          "</td><td>" + creditReceiptCell(r) +
           '</td><td class="n">' + esc(r.balance) + '</td><td class="n">' +
           esc(r.due || "—") + "</td></tr>";
       }).join("");
       return tableCard("hand-coins", "Outstanding credit — all shops" +
         (cr.label ? " · " + cr.label : ""), [
-        ["#"], ["Customer"], ["Shop"], ["Receipt"], ["Balance", 1], ["Due", 1]
+        ["#", 0, "wa-cnum"], ["Customer"], ["Shop"], ["Receipt"],
+        ["Balance", 1], ["Due", 1]
       ], crows, "<b>" + esc(cr.total) + "</b> across " + cr.count +
-        " receipts");
+        " receipts", "wa-table--credits");
     }
     if (card.expenses) {
       var ex = card.expenses;
@@ -258,6 +364,19 @@
   });
 
   stage.addEventListener("click", function (e) {
+    var cust = e.target.closest("[data-custphone]");
+    if (cust) {
+      var ph = cust.parentNode.querySelector(".wa-phone");
+      if (ph) ph.hidden = !ph.hidden;
+      refreshIcons();
+      return;
+    }
+    var eye = e.target.closest("[data-ritems]");
+    if (eye) {
+      e.preventDefault();
+      toggleReceiptItems(eye);
+      return;
+    }
     var bitems = e.target.closest("[data-bitems]");
     if (!bitems) return;
     e.preventDefault();

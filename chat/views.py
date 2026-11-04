@@ -29,7 +29,12 @@ from .auth import (
     shop_required,
 )
 from .models import Conversation, ConversationKind, Message, Participant
-from .myshop_models import CompanyProfile, Shop
+from .myshop_models import (
+    CompanyProfile,
+    Shop,
+    ShopReceipt,
+    ShopReceiptLine,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -723,6 +728,52 @@ def api_supplier_search(request):
     )
 
 
+@require_GET
+def api_receipt_items(request, receipt_id):
+    """Lines on one receipt — the credits card's eye-icon preview.
+
+    Shop sessions may only open their own receipts; signed-in staff
+    (the all-shops assistant) can open any of them.
+    """
+    me = current_shop(request)
+    emp = current_employee(request)
+    if me is None and emp is None:
+        return JsonResponse(
+            {"ok": False, "error": "authentication required"}, status=401
+        )
+    receipt = ShopReceipt.objects.filter(pk=receipt_id).first()
+    if receipt is None or (
+        emp is None and (me is None or receipt.shop_id != me.pk)
+    ):
+        return _err("Receipt not found.", 404)
+    items = [
+        {
+            "name": l.item_name,
+            "qty": bot_engine.qty_fmt(
+                (l.quantity or 0) - (l.returned_quantity or 0)
+            ),
+            "price": bot_engine.money(l.unit_price),
+            "total": bot_engine.money(l.line_total),
+            "serials": l.serial_numbers or [],
+        }
+        for l in ShopReceiptLine.objects.filter(
+            receipt_id=receipt.pk
+        ).order_by("pk")
+    ]
+    return JsonResponse(
+        {
+            "ok": True,
+            "receipt": {
+                "number": receipt.receipt_number,
+                "customer": receipt.client_name or "Walk-in customer",
+                "total": bot_engine.money(receipt.total),
+                "paid": bot_engine.money(receipt.amount_paid),
+            },
+            "items": items,
+        }
+    )
+
+
 @api_shop_required
 @require_POST
 def api_transfer(request, conversation_id):
@@ -798,6 +849,16 @@ def _create_transfer(me, destination, data, require_member=False):
     if dest_me_part:
         services.mark_read(dest_me_part, msg.pk)
         services.touch_presence(dest_me_part)
+    # A read-only copy lands in the shared Transfers feed — responses are
+    # handled from the direct thread, the feed just tracks the activity.
+    _activity_post(
+        "transfer", me, body,
+        stock_ops.transfer_card(
+            movement, me, destination, movement_lines, readonly=True
+        ),
+        by=stock_ops.employee_label(movement.created_by_id),
+        client_tag=f"transfer-feed:{movement.pk}",
+    )
     return dest_convo, msg
 
 
@@ -838,7 +899,9 @@ def api_transfer_respond(request, movement_id):
     """Accept (with received quantities) or decline a pending transfer.
 
     Mirrors MY-SHOP's respond_to_stock_request — stock only moves on accept
-    when every received quantity matches what was sent.
+    when every received quantity matches what was sent. A member of the
+    receiving shop enters their 6-digit staff code so the movement records
+    which employee accepted or declined (`responded_by_id`).
     """
     me = request.chat_shop
     data = _json_body(request)
@@ -850,9 +913,12 @@ def api_transfer_respond(request, movement_id):
             data.get("received") or {},
             data.get("reason") or "",
             data.get("serials") or {},
+            staff_code=data.get("staff_code") or "",
         )
     except stock_ops.StockError as exc:
         return _err(str(exc))
+
+    responder = stock_ops.employee_label(movement.responded_by_id)
 
     # Update the original card message so the status persists on reload.
     card_msg = Message.objects.filter(
@@ -865,18 +931,43 @@ def api_transfer_respond(request, movement_id):
         transfer["status"] = movement.request_status
         if movement.response_note:
             transfer["response_note"] = movement.response_note
+        if responder:
+            transfer["responded_by"] = responder
         meta["transfer"] = transfer
         card_msg.meta = meta
         card_msg.save(update_fields=["meta"])
 
+    # The read-only copy in the shared Transfers feed tracks the outcome
+    # too — update its status so the feed stays accurate on reload.
+    feed_msg = Message.objects.filter(
+        client_tag=f"transfer-feed:{movement.pk}"
+    ).order_by("id").first()
+    if feed_msg is not None:
+        meta = dict(feed_msg.meta or {})
+        transfer = dict(meta.get("transfer") or {})
+        transfer["status"] = movement.request_status
+        if movement.response_note:
+            transfer["response_note"] = movement.response_note
+        if responder:
+            transfer["responded_by"] = responder
+        meta["transfer"] = transfer
+        feed_msg.meta = meta
+        feed_msg.save(update_fields=["meta"])
+
     # Post a follow-up note both sides can see.
     note = None
     if convo is not None:
+        by = f" by {responder}" if responder else ""
         if movement.request_status == "fulfilled":
-            text = "Transfer confirmed — stock moved to " + me.name + "."
+            text = (
+                f"Transfer confirmed{by} — stock moved to {me.name}."
+            )
         else:
-            text = "Transfer declined: " + (movement.response_note or "")
+            text = (
+                f"Transfer declined{by}: " + (movement.response_note or "")
+            )
         note = services.post_card(convo, me, text, {})
+        _activity_post("transfer", me, text)
 
     me_part, peer = _participants(convo, me) if convo else (None, None)
     if me_part:
@@ -896,6 +987,31 @@ def api_transfer_respond(request, movement_id):
     if note is not None:
         payload["message"] = services.serialize_message(note, me, peer)
     return JsonResponse(payload)
+
+
+def _activity_post(activity, shop, body, meta=None, *, by="",
+                   client_tag=""):
+    """Mirror a completed action into its shared activity-feed group.
+
+    The same card lands in the all-shops feed so everyone can track the
+    day's activity; `by` names the staff member who ran it (rendered as a
+    "by …" byline under the card).
+    """
+    convo = services.activity_conversation(activity)
+    if convo is None:
+        return None
+    data = dict(meta or {})
+    if by:
+        data["by"] = by
+    msg = services.post_card(convo, shop, body, data)
+    if client_tag:
+        msg.client_tag = client_tag
+        msg.save(update_fields=["client_tag"])
+    for p in convo.participants.all():
+        if p.shop_id == shop.pk:
+            services.mark_read(p, msg.pk)
+            break
+    return msg
 
 
 def _post_pending(request, me, action: str, data: dict) -> JsonResponse:
@@ -1004,6 +1120,10 @@ def api_quick_stockin(request, conversation_id):
             movement, me, lines, supplier_name.upper()
         )
         msg = services.post_card(convo, me, body, card)
+        _activity_post(
+            "stockin", me, body, card,
+            by=stock_ops.employee_label(movement.created_by_id),
+        )
     else:
         emp = current_employee(request)
         try:
@@ -1079,13 +1199,36 @@ def api_pending_confirm(request, message_id):
     except stock_ops.StockError as exc:
         return _err(str(exc))
 
+    member_label = stock_ops.employee_label(emp_id)
     meta = dict(msg.meta or {})
     meta.pop("pending_action", None)
     meta.update(result["meta"])
-    meta["confirmed"] = {"by": stock_ops.employee_label(emp_id)}
+    meta["confirmed"] = {"by": member_label}
     msg.meta = meta
     msg.body = result["body"]
     msg.save(update_fields=["meta", "body"])
+
+    # Mirror the completed action into its shared activity-feed group so
+    # every shop can track the day's stock-in/transfers/trades/expenses.
+    activity = {
+        "stockin": "stockin",
+        "transfer": "transfer",
+        "expense": "expense",
+        "trade": "trade",
+    }.get(result["action"])
+    if activity is not None:
+        _activity_post(
+            activity,
+            action_shop,
+            result["body"],
+            result["meta"],
+            by=member_label,
+            client_tag=(
+                f"transfer-feed:{result['movement'].pk}"
+                if result["action"] == "transfer"
+                else ""
+            ),
+        )
 
     convo = msg.conversation
     me_part, peer = _participants(convo, me)
@@ -1111,11 +1254,11 @@ def api_pending_confirm(request, message_id):
     if result["action"] == "stockin":
         # The quick `#` flow: the card becomes the received card and a note
         # lands in the chat so every member sees it went through.
-        label = stock_ops.employee_label(emp_id)
         note = services.post_card(
             convo,
             action_shop,
-            result["body"] + (f" — confirmed by {label}" if label else ""),
+            result["body"]
+            + (f" — confirmed by {member_label}" if member_label else ""),
             {},
         )
         if me_part:
@@ -1188,6 +1331,10 @@ def api_stock_in(request):
     me_part, _peer = _participants(convo, me)
     if me_part:
         services.mark_read(me_part, msg.pk)
+    _activity_post(
+        "stockin", me, body, card,
+        by=stock_ops.employee_label(movement.created_by_id),
+    )
     return JsonResponse(
         {
             "ok": True,
@@ -1310,6 +1457,10 @@ def api_expense(request):
     me_part, _ = _participants(convo, me)
     if me_part:
         services.mark_read(me_part, msg.pk)
+    _activity_post(
+        "expense", me, body, card,
+        by=stock_ops.employee_label(expense.created_by_id),
+    )
     return JsonResponse(
         {
             "ok": True,
@@ -1355,6 +1506,10 @@ def _api_trade(request, me, data, kind):
     me_part, _ = _participants(convo, me)
     if me_part:
         services.mark_read(me_part, msg.pk)
+    _activity_post(
+        "trade", me, body, card,
+        by=stock_ops.employee_label(receipt.created_by_id),
+    )
     return JsonResponse(
         {
             "ok": True,

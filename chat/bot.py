@@ -15,6 +15,7 @@ from django.db.models import Count, F, Q, Sum
 from django.utils import timezone
 
 from .myshop_models import (
+    Client,
     Expense,
     Item,
     Shop,
@@ -210,6 +211,48 @@ def _receipts(shop: Shop, start, end, kinds=(SALE_KIND,)):
         created_at__gte=start_dt,
         created_at__lt=end_dt,
     )
+
+
+def _credit_rows(qs, shop_names=None) -> list:
+    """Serialized outstanding-credit rows shared by both assistants.
+
+    `rid` feeds the eye-icon items preview; `phone` comes from the receipt
+    with a fallback to the linked client's number so the name is tappable.
+    """
+    rows = list(qs.order_by("-balance")[:80])
+    missing = [
+        r.client_id
+        for r in rows
+        if r.client_id and not (r.client_phone or "").strip()
+    ]
+    phones = (
+        dict(
+            Client.objects.filter(pk__in=missing).values_list(
+                "pk", "phone_number"
+            )
+        )
+        if missing
+        else {}
+    )
+    out = []
+    for r in rows:
+        row = {
+            "rid": r.pk,
+            "customer": r.client_name or "Walk-in customer",
+            "phone": (r.client_phone or "").strip()
+            or phones.get(r.client_id, ""),
+            "receipt": r.receipt_number,
+            "balance": money(r.balance),
+            "due": (
+                r.credit_due_date.strftime("%d %b")
+                if r.credit_due_date
+                else ""
+            ),
+        }
+        if shop_names is not None:
+            row["shop"] = shop_names.get(r.shop_id, "")
+        out.append(row)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -725,19 +768,7 @@ def card_meta(shop: Shop, text: str):
                 "label": win[2] if win else "",
                 "total": money(qs.aggregate(t=Sum("balance"))["t"]),
                 "count": qs.count(),
-                "rows": [
-                    {
-                        "customer": r.client_name or "Walk-in customer",
-                        "receipt": r.receipt_number,
-                        "balance": money(r.balance),
-                        "due": (
-                            r.credit_due_date.strftime("%d %b")
-                            if r.credit_due_date
-                            else ""
-                        ),
-                    }
-                    for r in qs.order_by("-balance")[:80]
-                ],
+                "rows": _credit_rows(qs),
             }
         }
 
@@ -1031,20 +1062,7 @@ def card_for_all(text: str):
                 "label": label if win else "",
                 "total": money(qs.aggregate(t=Sum("balance"))["t"]),
                 "count": qs.count(),
-                "rows": [
-                    {
-                        "customer": r.client_name or "Walk-in customer",
-                        "shop": names.get(r.shop_id, ""),
-                        "receipt": r.receipt_number,
-                        "balance": money(r.balance),
-                        "due": (
-                            r.credit_due_date.strftime("%d %b")
-                            if r.credit_due_date
-                            else ""
-                        ),
-                    }
-                    for r in qs.order_by("-balance")[:80]
-                ],
+                "rows": _credit_rows(qs, names),
             }
         }
 

@@ -604,12 +604,17 @@ def create_stock_in(me, raw_lines, *, supplier_name: str, supplier_phone: str,
 
 @transaction.atomic
 def respond_to_transfer(me, movement_id, decision, received, reason="",
-                        serials_by_line=None):
+                        serials_by_line=None, staff_code="",
+                        employee_id=None):
     """Confirm or decline a pending transfer at the receiving shop.
 
     Accept requires every received quantity to equal what was sent; then
     stock moves sender → receiver (weighted avg cost carried over) and any
     serials are reassigned. Same outcome as MY-SHOP's confirm screen.
+
+    Both decisions need the 6-digit staff code of a member of the
+    receiving shop — it is stored on `responded_by_id` so reports show
+    which employee confirmed or declined.
     """
     decision = (decision or "").strip().lower()
     if decision not in ("accept", "decline"):
@@ -627,14 +632,19 @@ def respond_to_transfer(me, movement_id, decision, received, reason="",
         raise StockError("This stock transfer is no longer pending.")
     if movement.requested_from_shop_id != me.pk:
         raise StockError("Only the receiving shop can respond to this transfer.")
+    if employee_id is None:
+        employee_id = verify_employee_code(
+            staff_code, me, require_member=True
+        )
     sender_id, receiver_id = movement.shop_id, movement.requested_from_shop_id
     if not sender_id or not receiver_id:
         raise StockError("This stock transfer is missing shop details.")
     now = timezone.now()
+    movement.responded_by_id = employee_id
 
     update = [
         "request_status", "response_note", "requester_notified",
-        "supplier_notified", "responded_at",
+        "supplier_notified", "responded_at", "responded_by_id",
     ]
     if decision == "decline":
         note = " ".join(str(reason or "").split()).strip()
@@ -842,6 +852,11 @@ def transfer_card(movement: StockMovement, sender, receiver, movement_lines,
             "from_shop_id": sender.pk,
             "to_shop_id": receiver.pk,
             "readonly": readonly,
+            "responded_by": (
+                employee_label(movement.responded_by_id)
+                if movement.responded_by_id
+                else ""
+            ),
             "items": [
                 {
                     "line_id": l.pk,

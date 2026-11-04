@@ -26,6 +26,7 @@ class Conversation(models.Model):
         max_length=12, choices=ConversationKind.choices, db_index=True
     )
     # Direct threads: "<low_shop_id>:<high_shop_id>" — unique per shop pair.
+    # Shared activity feeds use "activity:<name>" — unique per action type.
     pair_key = models.CharField(
         max_length=32, unique=True, null=True, blank=True
     )

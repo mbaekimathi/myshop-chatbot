@@ -150,6 +150,57 @@ def create_group(me: Shop, name: str, members: list) -> Conversation:
     return convo
 
 
+# Shared activity feeds — one auto-managed group per stock action. Every
+# active shop is a participant so the whole business can track the day's
+# stock-in, transfers, trades and expenses; messages name the shop and the
+# staff member who ran the action.
+ACTIVITY_GROUPS = {
+    "stockin": "Incoming stock",
+    "transfer": "Transfers",
+    "trade": "Trades",
+    "expense": "Expenses",
+}
+ACTIVITY_KEY_PREFIX = "activity:"
+
+
+def activity_conversation(activity: str) -> Conversation | None:
+    """Get-or-create the shared feed group for one action type.
+
+    Membership self-heals: shops added after the group was created join on
+    the next activity post. The `activity:<name>` pair_key keeps the group
+    unique and distinct from user-created groups (which have no pair_key).
+    """
+    name = ACTIVITY_GROUPS.get(activity)
+    if not name:
+        return None
+    key = ACTIVITY_KEY_PREFIX + activity
+    convo = (
+        Conversation.objects.filter(
+            kind=ConversationKind.GROUP, pair_key=key
+        )
+        .prefetch_related("participants")
+        .first()
+    )
+    if convo is None:
+        try:
+            convo = Conversation.objects.create(
+                kind=ConversationKind.GROUP, pair_key=key, name=name
+            )
+        except IntegrityError:
+            convo = Conversation.objects.get(
+                kind=ConversationKind.GROUP, pair_key=key
+            )
+    have = {p.shop_id for p in convo.participants.all()}
+    missing = [
+        Participant(conversation=convo, shop_id=s.pk)
+        for s in active_shops()
+        if s.pk not in have
+    ]
+    if missing:
+        Participant.objects.bulk_create(missing, ignore_conflicts=True)
+    return convo
+
+
 def my_conversations(shop: Shop):
     return (
         Conversation.objects.filter(participants__shop_id=shop.pk)

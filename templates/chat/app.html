@@ -11,6 +11,8 @@
   data-poll-url="{% url 'chat:api_poll' %}"
   data-open-url="{% url 'chat:api_open' %}"
   data-group-url="{% url 'chat:api_group_create' %}"
+  data-group-update-base="{% url 'chat:api_group_update' conversation_id=0 %}"
+  data-group-delete-base="{% url 'chat:api_group_delete' conversation_id=0 %}"
   data-send-base="{% url 'chat:api_send' conversation_id=0 %}"
   data-read-base="{% url 'chat:api_read' conversation_id=0 %}"
   data-typing-base="{% url 'chat:api_typing' conversation_id=0 %}"
@@ -120,6 +122,9 @@
             <strong data-wa-head-name>Chat</strong>
             <span data-wa-head-meta></span>
           </div>
+          <button type="button" class="comms-icon-btn comms-icon-btn--soft wa-app__group-settings" data-wa-group-settings hidden title="Group settings" aria-label="Group settings">
+            <i data-lucide="settings" aria-hidden="true"></i>
+          </button>
         </header>
         <div class="wa-app__stage" data-wa-stage>
           <button type="button" class="wa-load-more" data-wa-load-more hidden>Load earlier messages</button>
@@ -196,6 +201,33 @@
       <button type="button" class="btn btn--block wa-group-create" data-wa-groupcreate>
         <i data-lucide="users" aria-hidden="true"></i>
         <span data-wa-groupcreate-label>Create group</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="wa-group-settings" data-wa-group-panel hidden>
+    <div class="wa-app__contacts-head">
+      <button type="button" class="comms-icon-btn" data-wa-group-panel-close aria-label="Close">
+        <i data-lucide="arrow-left" aria-hidden="true"></i>
+      </button>
+      <strong>Group settings</strong>
+    </div>
+    <div class="wa-group-settings__body">
+      <label class="wa-group-settings__field">
+        <span>Group name</span>
+        <input type="text" class="wa-group-name" maxlength="80" autocomplete="off"
+               placeholder="Group name" data-wa-group-rename aria-label="Group name">
+      </label>
+      <button type="button" class="btn btn--block" data-wa-group-save>
+        <i data-lucide="check" aria-hidden="true"></i>
+        <span>Save name</span>
+      </button>
+      <p class="wa-group-settings__hint" data-wa-group-activity-hint hidden>
+        Shared activity feeds reappear automatically the next time that action runs.
+      </p>
+      <button type="button" class="btn btn--block btn--danger" data-wa-group-delete>
+        <i data-lucide="trash-2" aria-hidden="true"></i>
+        <span>Delete group</span>
       </button>
     </div>
   </div>
@@ -290,17 +322,6 @@
       </div>
 
 
-      <div class="wa-stock__supplier" data-stock-supplier hidden>
-        <p class="wa-stock__label">Supplier <em>(required)</em></p>
-        <div class="wa-stock__typeahead">
-          <input type="tel" placeholder="Phone number e.g. 0712 345 678" autocomplete="off" data-stock-phone>
-          <div class="wa-stock__suggest" data-stock-phone-suggest hidden></div>
-        </div>
-        <div class="wa-stock__typeahead">
-          <input type="text" placeholder="Supplier name" autocomplete="off" data-stock-supname>
-          <div class="wa-stock__suggest" data-stock-name-suggest hidden></div>
-        </div>
-      </div>
     </div>
 
     <div class="wa-stock__foot">
@@ -310,6 +331,19 @@
         <i data-lucide="chevron-down" aria-hidden="true"></i>
       </button>
       <div class="wa-stock__details" id="wa-stock-details" data-stock-details hidden>
+      <div class="wa-stock__supplier" data-stock-supplier hidden>
+        <p class="wa-stock__label">Supplier <em>(required)</em></p>
+        <div class="wa-stock__typeahead">
+          <input type="tel" placeholder="Phone number e.g. 0712 345 678"
+                 autocomplete="off" inputmode="tel" data-stock-phone>
+          <div class="wa-stock__suggest" data-stock-phone-suggest hidden></div>
+        </div>
+        <div class="wa-stock__typeahead">
+          <input type="text" placeholder="Supplier name" autocomplete="off"
+                 data-stock-supname>
+          <div class="wa-stock__suggest" data-stock-name-suggest hidden></div>
+        </div>
+      </div>
       <div class="wa-stock__supplier" data-stock-payment hidden>
         <p class="wa-stock__label">Payment <em>(required)</em></p>
         <select data-stock-kind>
@@ -378,5 +412,5 @@
 
 {% block extra_js %}
 <script defer src="{% static 'js/vendor/html5-qrcode.min.js' %}"></script>
-<script defer src="{% static 'js/chatbot.js' %}?v=47"></script>
+<script defer src="{% static 'js/chatbot.js' %}?v=49"></script>
 {% endblock %}

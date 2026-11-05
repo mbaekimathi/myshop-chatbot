@@ -171,6 +171,26 @@ def create_group(me: Shop, name: str, members: list) -> Conversation:
     return convo
 
 
+def rename_group(convo: Conversation, me: Shop, name: str) -> Conversation:
+    """Rename a group thread and post a system notice."""
+    old = (convo.name or "Group").strip() or "Group"
+    convo.name = name
+    convo.save(update_fields=["name"])
+    if old != name:
+        Message.objects.create(
+            conversation=convo,
+            sender_shop_id=None,
+            kind=MessageKind.SYSTEM,
+            body=f"{me.name} renamed the group to “{name}”",
+        )
+    return convo
+
+
+def delete_group(convo: Conversation) -> None:
+    """Remove a group (and its messages/participants) for every shop."""
+    convo.delete()
+
+
 # Shared activity feeds — one auto-managed group per stock action. Every
 # active shop is a participant so the whole business can track the day's
 # stock-in, transfers, trades and expenses; messages name the shop and the
@@ -182,6 +202,12 @@ ACTIVITY_GROUPS = {
     "expense": "Expenses",
 }
 ACTIVITY_KEY_PREFIX = "activity:"
+
+
+def is_activity_group(convo: Conversation) -> bool:
+    """Shared stock-action feeds — still renameable/deletable by members."""
+    key = convo.pair_key or ""
+    return key.startswith(ACTIVITY_KEY_PREFIX)
 
 
 def activity_conversation(activity: str) -> Conversation | None:
@@ -630,6 +656,9 @@ def serialize_conversation(convo: Conversation, me: Shop, shops_map: dict) -> di
         "unread": unread,
         "last_message": last_data,
         "last_id": last.pk if last else 0,
+        # Members can rename/delete any group, including activity feeds.
+        "can_manage": group,
+        "activity": group and is_activity_group(convo),
     }
 
 

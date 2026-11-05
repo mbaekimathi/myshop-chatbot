@@ -547,6 +547,26 @@
     yearSel.innerHTML = opts;
   })();
 
+  // Back — prefer previous page; fall back to shop chat when this
+  // tab has no in-app history (e.g. opened directly / PWA cold start).
+  var backBtn = document.querySelector("[data-all-back]");
+  if (backBtn) {
+    backBtn.addEventListener("click", function () {
+      var fallback = backBtn.getAttribute("data-fallback") || "/chat/";
+      var canGoBack = false;
+      if (document.referrer) {
+        try {
+          canGoBack = new URL(document.referrer).origin === location.origin;
+        } catch (e) {}
+      }
+      if (canGoBack && history.length > 1) {
+        history.back();
+        return;
+      }
+      location.href = fallback;
+    });
+  }
+
   // Theme toggle
   var themeBtn = document.querySelector("[data-theme-toggle]");
   function paint() {

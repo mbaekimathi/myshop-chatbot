@@ -266,10 +266,16 @@ def upsert_client(full_name: str, phone: str):
     )
 
 
-def supplier_search(query: str, limit: int = 8) -> list:
+def supplier_search(query: str, limit: int = 8, *, kind: str = "stock") -> list:
+    """Live name/phone suggestions for stock-in or expense suppliers.
+
+    ``kind="expense"`` searches ``ExpenseSupplier``; anything else uses the
+    stock-in ``Supplier`` table. Matches on name substring or phone digits.
+    """
     phrase = (query or "").strip()
     digits = _digits(phrase)
-    qs = Supplier.objects.all()
+    Model = ExpenseSupplier if kind == "expense" else Supplier
+    qs = Model.objects.all()
     if phrase:
         from django.db.models import Q
 
@@ -277,6 +283,10 @@ def supplier_search(query: str, limit: int = 8) -> list:
         if digits:
             cond |= Q(phone_number__icontains=digits)
             cond |= Q(phone_country_code__icontains=digits)
+            # Also match as typed (spaces/leading 0) against national number.
+            national = digits.lstrip("0")
+            if national and national != digits:
+                cond |= Q(phone_number__icontains=national)
         qs = qs.filter(cond)
     return [
         {

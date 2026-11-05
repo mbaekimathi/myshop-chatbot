@@ -463,6 +463,12 @@ html[data-theme="dark"] .field input:focus { background: #0f1917; }
 .btn--block { width: 100%; }
 .btn .lucide { width: 1.1rem; height: 1.1rem; }
 
+.btn--danger {
+  background: #dc3545;
+  box-shadow: none;
+}
+.btn--danger:hover { filter: brightness(1.05); }
+
 .auth-submit {
   margin-top: 0.4rem;
   padding: 0.85rem 1.1rem;
@@ -610,7 +616,8 @@ html[data-theme="dark"] .comms {
   flex: 0 0 auto;
 }
 
-.wa-app__bar-actions .comms-icon-btn { color: #fff; }
+.wa-app__bar-actions .comms-icon-btn,
+.wa-app__brand > .comms-icon-btn { color: #fff; }
 
 .wa-app__shell {
   display: grid;
@@ -1097,6 +1104,53 @@ html[data-theme="dark"] .comms {
   border-top: 1px solid var(--wa-line);
 }
 
+.wa-app__group-settings {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.wa-group-settings {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: min(var(--wa-list), 100%);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  background: var(--wa-panel);
+  border-right: 1px solid var(--wa-line);
+}
+
+.wa-group-settings[hidden] { display: none; }
+
+.wa-group-settings__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 1rem 0.85rem;
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+}
+
+.wa-group-settings__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--wa-muted);
+}
+
+.wa-group-settings__hint {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--wa-muted);
+  font-weight: 500;
+}
+
+.wa-group-settings__body .btn--danger {
+  margin-top: 0.6rem;
+}
+
 .wa-group-name {
   width: 100%;
   padding: 0.55rem 0.7rem;
@@ -1252,7 +1306,8 @@ html[data-theme="dark"] .comms {
   .wa-app.is-chat-open .wa-app__list { display: none; }
   .wa-app.is-chat-open .wa-app__chat { display: flex; }
   .wa-app__back { display: inline-grid; }
-  .wa-app__contacts { width: 100%; border-right: 0; }
+  .wa-app__contacts,
+  .wa-group-settings { width: 100%; border-right: 0; }
   .wa-app__stage { padding: 0.55rem 0.65rem 0.75rem; }
   .wa-bubble-row { max-width: 86%; }
   .wa-app__emoji-pop { grid-template-columns: repeat(6, minmax(1.35rem, 1fr)); }
@@ -1282,14 +1337,16 @@ html[data-theme="dark"] .comms {
     max-width: 86rem;
     border-inline: 1px solid var(--wa-line);
   }
-  .wa-app__contacts:not([hidden]) {
+  .wa-app__contacts:not([hidden]),
+  .wa-group-settings:not([hidden]) {
     inset: 0 0 0 auto;
     width: min(21rem, 32%);
     border-right: 0;
     border-left: 1px solid var(--wa-line);
     box-shadow: -10px 0 28px rgba(10, 30, 32, 0.1);
   }
-  .wa-app:has(.wa-app__contacts:not([hidden])) .wa-app__shell {
+  .wa-app:has(.wa-app__contacts:not([hidden])) .wa-app__shell,
+  .wa-app:has(.wa-group-settings:not([hidden])) .wa-app__shell {
     margin-right: min(21rem, 32%);
   }
 }
@@ -1608,8 +1665,8 @@ html[data-theme="dark"] .comms {
   height: 0.85rem;
 }
 
-/* Mobile: JS pins body dropdowns to the input with fixed coordinates so
-   they float over the pinned footer instead of being clipped by scroll. */
+/* Mobile: JS pins body/details dropdowns to the input with fixed
+   coordinates so they float over the panel instead of being clipped. */
 
 .wa-stock__suggest.is-float {
   position: fixed;
@@ -1639,7 +1696,9 @@ html[data-theme="dark"] .comms {
 }
 .wa-chip--send:hover { color: #fff; filter: brightness(1.05); box-shadow: none; }
 
-.wa-stock__send { margin-top: auto; }
+/* Submit sits in the pinned foot — don't auto-margin it or a tall foot
+   leaves a blank strip above the button on mobile. */
+.wa-stock__send { margin-top: 0; }
 
 /* Transfer / stock-in card bubbles */
 
@@ -2609,9 +2668,14 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
    Stock panel — fit content to pane width
    ========================================================================== */
 
-.wa-stock,
+.wa-stock {
+  overflow: hidden; /* clip both axes so a tall foot can't spill / rubber-band */
+}
+
 .wa-stock__body {
   overflow-x: clip;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .wa-stock-line {
@@ -2687,17 +2751,21 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
 .wa-stock__body { flex: 1 1 auto; min-height: 0; }
 
 .wa-stock__foot {
-  flex: 0 0 auto;
-  display: grid;
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
   padding: 0.7rem 0.9rem calc(0.7rem + env(safe-area-inset-bottom));
   border-top: 1px solid var(--wa-line);
   background: var(--wa-panel-2);
+  overscroll-behavior: contain;
 }
 
 /* Collapsible payment/client details — keeps the items list visible */
 
 .wa-stock__detailstoggle {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2728,8 +2796,21 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
 }
 
 .wa-stock__details {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
   gap: 0.6rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Total / staff code / submit stay pinned under a scrollable details block */
+.wa-stock__total,
+.wa-stock__codebox,
+.wa-stock__send,
+.wa-stock__error {
+  flex: 0 0 auto;
 }
 
 /* Per-line qty × price = total readout */
@@ -3517,8 +3598,9 @@ html[data-theme="dark"] .wa-stock__total {
 .wa-stock__send { border-radius: 12px; }
 
 /* ------------------------------------------------------------------
-   Mobile — keep >=16px on editable inputs (iOS zoom guard) and let the
-   controls row wrap cleanly on the narrowest screens
+   Mobile — keep >=16px on editable inputs (iOS zoom guard), let the
+   controls row wrap cleanly, and stop Payment & client from eating the
+   cart (details scroll inside the foot; items stay on screen).
    ------------------------------------------------------------------ */
 
 @media (max-width: 639px) {
@@ -3532,10 +3614,32 @@ html[data-theme="dark"] .wa-stock__total {
     width: 5.4rem;
   }
 
-  .wa-stock__body { padding: 0.7rem 0.75rem 1rem; }
+  .wa-stock__body {
+    flex: 1 1 auto;
+    min-height: 8rem; /* never collapse the cart into a blank pane */
+    padding: 0.7rem 0.75rem 1rem;
+  }
+
+  .wa-stock__foot {
+    flex: 0 1 auto;
+    max-height: 48%;
+  }
+
+  .wa-stock__details {
+    max-height: 100%;
+  }
+
+  /* Soft keyboard: keep focused footer fields reachable without
+     rubber-banding the whole panel into empty space */
+  .wa-stock__foot:focus-within {
+    max-height: min(58%, 22rem);
+  }
 }
 
 @media (max-width: 480px) {
   .wa-stock-line__ctrls { gap: 0.3rem 0.4rem; }
   .wa-stock-line input[type="number"].wa-stock-line__price { width: 4.9rem; }
+
+  .wa-stock__body { min-height: 7rem; }
+  .wa-stock__foot { max-height: 46%; }
 }

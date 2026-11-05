@@ -1039,6 +1039,70 @@ class GroupTests(ChatTestCase):
         )
         self.assertEqual(resp.status_code, 404)
 
+    def test_rename_group(self):
+        convo_id = self.create_group().json()["conversation"]["id"]
+        resp = self.client.post(
+            reverse("chat:api_group_update", args=[convo_id]),
+            data=json.dumps({"name": "Renamed branches"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["conversation"]["title"], "Renamed branches")
+        self.assertTrue(data["conversation"]["can_manage"])
+        note = Message.objects.filter(conversation_id=convo_id).order_by("-id")[0]
+        self.assertEqual(note.kind, "system")
+        self.assertIn("renamed the group", note.body)
+        self.assertIn("Renamed branches", note.body)
+
+    def test_rename_group_requires_name(self):
+        convo_id = self.create_group().json()["conversation"]["id"]
+        resp = self.client.post(
+            reverse("chat:api_group_update", args=[convo_id]),
+            data=json.dumps({"name": "  "}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_delete_group(self):
+        convo_id = self.create_group().json()["conversation"]["id"]
+        resp = self.client.post(
+            reverse("chat:api_group_delete", args=[convo_id]),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+        self.assertEqual(resp.json()["deleted_id"], convo_id)
+        self.assertIsNone(
+            services.get_member_conversation(convo_id, self.shop_a)
+        )
+        # Other members also lose the thread.
+        self.assertIsNone(
+            services.get_member_conversation(convo_id, self.shop_b)
+        )
+
+    def test_group_settings_rejected_for_non_member(self):
+        convo_id = self.create_group(
+            members=[self.shop_b.pk]
+        ).json()["conversation"]["id"]
+        client_c = Client()
+        client_c.post(
+            reverse("chat:login"),
+            {"login_code": "333333", "password": "pass-c"},
+        )
+        resp = client_c.post(
+            reverse("chat:api_group_update", args=[convo_id]),
+            data=json.dumps({"name": "Hijacked"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 404)
+        resp = client_c.post(
+            reverse("chat:api_group_delete", args=[convo_id]),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 404)
+
 
 class QuickStockinTests(ChatTestCase):
     """The `#` quick stock-in posts into the open chat: a pending card

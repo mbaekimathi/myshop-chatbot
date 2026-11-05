@@ -16,6 +16,16 @@ urlpatterns = [
     path("api/poll/", views.api_poll, name="api_poll"),
     path("api/open/", views.api_open, name="api_open"),
     path("api/groups/", views.api_group_create, name="api_group_create"),
+    path(
+        "api/groups/<int:conversation_id>/",
+        views.api_group_update,
+        name="api_group_update",
+    ),
+    path(
+        "api/groups/<int:conversation_id>/delete/",
+        views.api_group_delete,
+        name="api_group_delete",
+    ),
     path("api/items/search/", views.api_item_search, name="api_item_search"),
     path(
         "api/suppliers/search/",

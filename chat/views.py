@@ -620,6 +620,41 @@ def api_group_create(request):
 
 @api_shop_required
 @require_POST
+def api_group_update(request, conversation_id):
+    """POST {name} → rename a group the shop belongs to."""
+    me = request.chat_shop
+    convo = services.get_member_conversation(conversation_id, me)
+    if convo is None or convo.kind != ConversationKind.GROUP:
+        return _err("Group not found.", 404)
+    data = _json_body(request)
+    name = (data.get("name") or "").strip()[:80]
+    if not name:
+        return _err("Give the group a name.")
+    services.rename_group(convo, me, name)
+    shops_map = services.shops_map_for([convo])
+    return JsonResponse(
+        {
+            "ok": True,
+            "conversation": services.serialize_conversation(convo, me, shops_map),
+            "active": _serialize_active(convo, me),
+        }
+    )
+
+
+@api_shop_required
+@require_POST
+def api_group_delete(request, conversation_id):
+    """POST → delete a group for every participant."""
+    me = request.chat_shop
+    convo = services.get_member_conversation(conversation_id, me)
+    if convo is None or convo.kind != ConversationKind.GROUP:
+        return _err("Group not found.", 404)
+    services.delete_group(convo)
+    return JsonResponse({"ok": True, "deleted_id": conversation_id})
+
+
+@api_shop_required
+@require_POST
 def api_send(request, conversation_id):
     me = request.chat_shop
     convo = services.get_member_conversation(conversation_id, me)
@@ -751,11 +786,16 @@ def api_serial_search(request):
 @api_shop_required
 @require_GET
 def api_supplier_search(request):
-    """Live supplier suggestions (name or phone) for stock-in."""
+    """Live supplier suggestions (name or phone) for stock-in / expense."""
+    kind = (request.GET.get("kind") or "stock").strip().lower()
+    if kind not in ("stock", "expense"):
+        kind = "stock"
     return JsonResponse(
         {
             "ok": True,
-            "suppliers": stock_ops.supplier_search(request.GET.get("q") or ""),
+            "suppliers": stock_ops.supplier_search(
+                request.GET.get("q") or "", kind=kind
+            ),
         }
     )
 

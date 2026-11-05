@@ -8,6 +8,9 @@
 <section class="comms wa-app all-app">
   <header class="wa-app__bar">
     <div class="wa-app__brand">
+      <button type="button" class="comms-icon-btn" data-all-back data-fallback="{% url 'chat:app' %}" aria-label="Back" title="Back">
+        <i data-lucide="arrow-left" aria-hidden="true"></i>
+      </button>
       <span class="comms-avatar wa-app__logo" data-tone="1" aria-hidden="true"><i data-lucide="layers"></i></span>
       <div>
         <strong>All shops</strong>
@@ -162,5 +165,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script defer src="{% static 'js/all.js' %}?v=8"></script>
+<script defer src="{% static 'js/all.js' %}?v=9"></script>
 {% endblock %}

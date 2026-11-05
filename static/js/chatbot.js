@@ -15,6 +15,8 @@
     poll: root.dataset.pollUrl,
     open: root.dataset.openUrl,
     group: root.dataset.groupUrl,
+    groupUpdate: root.dataset.groupUpdateBase,
+    groupDelete: root.dataset.groupDeleteBase,
     send: root.dataset.sendBase,
     read: root.dataset.readBase,
     typing: root.dataset.typingBase,
@@ -45,6 +47,63 @@
 
   var me = readJson("chat-init-me", { id: 0, name: "" });
   var suggestions = readJson("chat-init-suggestions", []);
+
+  // ------------------------------------------------------------------
+  // In-app history — Android / browser Back closes chat overlays
+  // instead of exiting the installed PWA.
+  // ------------------------------------------------------------------
+
+  var navStack = [];
+  var navQuiet = 0; // ignore popstate after programmatic history.go
+
+  try {
+    history.replaceState({ wa: "root" }, "", window.location.href);
+  } catch (e) {}
+
+  function pushNav(layer) {
+    if (navStack[navStack.length - 1] === layer) return;
+    navStack.push(layer);
+    try {
+      history.pushState({ wa: layer }, "", window.location.href);
+    } catch (e) {}
+  }
+
+  function applyNavClose(layer) {
+    if (layer === "scanner") closeScannerUi();
+    else if (layer === "stock") closeStockUi();
+    else if (layer === "groupSettings") hideGroupSettingsUi();
+    else if (layer === "contacts") hideContactsUi();
+    else if (layer === "chat") closeChatUi();
+  }
+
+  function requestNavClose(layer) {
+    var idx = navStack.lastIndexOf(layer);
+    if (idx < 0) {
+      applyNavClose(layer);
+      return;
+    }
+    // Close this layer and anything stacked above it (e.g. scanner
+    // above stock), then rewind browser history to match.
+    var steps = navStack.length - idx;
+    while (navStack.length > idx) applyNavClose(navStack.pop());
+    if (steps > 0) {
+      navQuiet += steps;
+      try {
+        history.go(-steps);
+      } catch (e) {
+        navQuiet -= steps;
+      }
+    }
+  }
+
+  window.addEventListener("popstate", function () {
+    if (navQuiet > 0) {
+      navQuiet -= 1;
+      return;
+    }
+    var layer = navStack.pop();
+    if (layer) applyNavClose(layer);
+  });
 
   var state = {
     conversations: readJson("chat-init-conversations", []),
@@ -110,6 +169,13 @@
     groupFoot: root.querySelector("[data-wa-groupfoot]"),
     groupCreate: root.querySelector("[data-wa-groupcreate]"),
     groupCreateLabel: root.querySelector("[data-wa-groupcreate-label]"),
+    groupSettingsBtn: root.querySelector("[data-wa-group-settings]"),
+    groupPanel: root.querySelector("[data-wa-group-panel]"),
+    groupPanelClose: root.querySelector("[data-wa-group-panel-close]"),
+    groupRename: root.querySelector("[data-wa-group-rename]"),
+    groupSave: root.querySelector("[data-wa-group-save]"),
+    groupDelete: root.querySelector("[data-wa-group-delete]"),
+    groupActivityHint: root.querySelector("[data-wa-group-activity-hint]"),
     themeToggle: root.querySelector("[data-theme-toggle]"),
     mute: root.querySelector("[data-wa-mute]"),
     plus: root.querySelector("[data-wa-plus]"),
@@ -369,6 +435,9 @@
         '<span class="comms-avatar" data-wa-head-avatar data-tone="' + convo.tone +
         '">' + escapeHtml(convo.initials) + "</span>";
       els.headAvatar = root.querySelector("[data-wa-head-avatar]");
+    }
+    if (els.groupSettingsBtn) {
+      els.groupSettingsBtn.hidden = !(convo.kind === "group" && convo.can_manage !== false);
     }
     refreshIcons();
   }
@@ -963,6 +1032,17 @@
   // Open / send / read / typing
   // ------------------------------------------------------------------
 
+  function closeChatUi() {
+    hideGroupSettingsUi();
+    root.classList.remove("is-chat-open");
+    state.activeId = null;
+    state.activeKind = null;
+    els.thread.hidden = true;
+    els.empty.hidden = false;
+    if (els.groupSettingsBtn) els.groupSettingsBtn.hidden = true;
+    renderChatList();
+  }
+
   function openConversation(id) {
     var convo = findConvo(id);
     if (!convo) return;
@@ -981,6 +1061,16 @@
     els.loadMore.hidden = true;
     els.suggestionsBar.hidden = convo.kind !== "bot";
     els.period.hidden = true;
+    // Re-use the contacts history entry when opening a chat from the
+    // picker so Back returns to the list in one step.
+    if (navStack[navStack.length - 1] === "contacts") {
+      navStack[navStack.length - 1] = "chat";
+      try {
+        history.replaceState({ wa: "chat" }, "", window.location.href);
+      } catch (e) {}
+    } else {
+      pushNav("chat");
+    }
     pollNow().then(function () { scrollBottom(false); });
     markRead();
     els.input.focus();
@@ -997,8 +1087,8 @@
         ? state.messages[state.messages.length - 1].id : 0;
     }
     renderChatList();
+    hideContactsUi();
     openConversation(convo.id);
-    hideContacts();
   }
 
   function openByTarget(target) {
@@ -1099,7 +1189,25 @@
     return fetch(URLS.poll + params, { credentials: "same-origin" })
       .then(function (r) { return r.json(); })
       .then(function (resp) {
-        if (!resp.ok) return;
+        if (!resp.ok) {
+          // Open group was deleted by another member — drop it and go back.
+          if (
+            state.activeId &&
+            resp.error &&
+            /not found/i.test(String(resp.error))
+          ) {
+            var gone = state.activeId;
+            state.conversations = state.conversations.filter(function (c) {
+              return c.id !== gone;
+            });
+            hideGroupSettingsUi();
+            if (navStack[navStack.length - 1] === "groupSettings") navStack.pop();
+            if (navStack[navStack.length - 1] === "chat") requestNavClose("chat");
+            else closeChatUi();
+            showToast("This chat is no longer available.");
+          }
+          return;
+        }
         state.pollDelay = 2500;
         var wasUnread = {};
         state.conversations.forEach(function (c) { wasUnread[c.id] = c.unread; });
@@ -1149,6 +1257,12 @@
         });
         updateTitleBadge();
         renderChatList();
+        if (state.activeId) {
+          var active = findConvo(state.activeId);
+          if (active && els.headName && els.headName.textContent !== active.title) {
+            setHead(active);
+          }
+        }
       })
       .catch(function () {
         state.pollDelay = Math.min(state.pollDelay * 2, 15000);
@@ -1393,12 +1507,18 @@
     els.contacts.hidden = false;
     els.contactSearch.value = "";
     state.contactFilter = "";
+    pushNav("contacts");
     els.contactSearch.focus();
   }
 
-  function hideContacts() {
+  function hideContactsUi() {
     els.contacts.hidden = true;
     leaveGroupMode();
+  }
+
+  function hideContacts() {
+    if (els.contacts.hidden) return;
+    requestNavClose("contacts");
   }
 
   function createGroup() {
@@ -1427,6 +1547,116 @@
       })
       .finally(function () {
         els.groupCreate.disabled = false;
+      });
+  }
+
+  function showGroupSettings() {
+    var convo = findConvo(state.activeId);
+    if (!convo || convo.kind !== "group" || !els.groupPanel) return;
+    if (els.groupRename) els.groupRename.value = convo.title || "";
+    if (els.groupActivityHint) {
+      els.groupActivityHint.hidden = !convo.activity;
+    }
+    els.groupPanel.hidden = false;
+    pushNav("groupSettings");
+    if (els.groupRename) els.groupRename.focus();
+    refreshIcons();
+  }
+
+  function hideGroupSettingsUi() {
+    if (els.groupPanel) els.groupPanel.hidden = true;
+  }
+
+  function hideGroupSettings() {
+    if (!els.groupPanel || els.groupPanel.hidden) return;
+    requestNavClose("groupSettings");
+  }
+
+  function saveGroupName() {
+    if (!state.activeId || !els.groupRename) return;
+    var name = (els.groupRename.value || "").trim();
+    if (!name) {
+      els.groupRename.focus();
+      showToast("Give the group a name first.");
+      return;
+    }
+    if (els.groupSave) els.groupSave.disabled = true;
+    post(urlFor(URLS.groupUpdate, state.activeId), { name: name })
+      .then(function (resp) {
+        if (!resp.ok) {
+          showToast(resp.error || "Could not rename the group.");
+          return;
+        }
+        var updated = resp.conversation;
+        var existing = findConvo(updated.id);
+        if (existing) {
+          existing.title = updated.title;
+          existing.subtitle = updated.subtitle;
+          existing.initials = updated.initials;
+          existing.can_manage = updated.can_manage;
+          existing.activity = updated.activity;
+        } else {
+          state.conversations.push(updated);
+        }
+        if (resp.active && resp.active.messages) {
+          resp.active.messages.forEach(function (m) {
+            var exists = state.messages.some(function (x) { return x.id === m.id; });
+            if (!exists) {
+              state.messages.push(m);
+              if (typeof m.id === "number" && m.id > state.lastMsgId) {
+                state.lastMsgId = m.id;
+              }
+            }
+          });
+          renderStage();
+          scrollBottom(true);
+        }
+        setHead(findConvo(updated.id) || updated);
+        renderChatList();
+        showToast("Group renamed.");
+        hideGroupSettings();
+      })
+      .finally(function () {
+        if (els.groupSave) els.groupSave.disabled = false;
+      });
+  }
+
+  function deleteGroup() {
+    if (!state.activeId) return;
+    var convo = findConvo(state.activeId);
+    var label = (convo && convo.title) || "this group";
+    if (!window.confirm('Delete "' + label + '" for every shop? This cannot be undone.')) {
+      return;
+    }
+    var id = state.activeId;
+    if (els.groupDelete) els.groupDelete.disabled = true;
+    post(urlFor(URLS.groupDelete, id), {})
+      .then(function (resp) {
+        if (!resp.ok) {
+          showToast(resp.error || "Could not delete the group.");
+          return;
+        }
+        state.conversations = state.conversations.filter(function (c) {
+          return c.id !== id;
+        });
+        hideGroupSettingsUi();
+        // Drop the settings nav entry, then leave the chat.
+        if (navStack[navStack.length - 1] === "groupSettings") {
+          navStack.pop();
+        }
+        if (state.activeId === id) {
+          if (navStack[navStack.length - 1] === "chat") {
+            requestNavClose("chat");
+          } else {
+            closeChatUi();
+          }
+        } else {
+          renderChatList();
+        }
+        showToast("Group deleted.");
+      })
+      .finally(function () {
+        if (els.groupDelete) els.groupDelete.disabled = false;
       });
   }
 
@@ -1527,12 +1757,38 @@
       : "Add the items the client is taking.";
   }
 
-  // The footer's payment/client block collapses so the items list keeps
-  // room on small screens — the toggle reopens it for detail entry.
+  // The footer's payment/client/supplier block collapses so the items
+  // list keeps room on small screens — the toggle reopens it for entry.
   function setStockDetails(open) {
     if (!els.stockDetails || !els.stockDetailsToggle) return;
     els.stockDetails.hidden = !open;
     els.stockDetailsToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) syncDetailsToggleLabel();
+  }
+
+  function syncDetailsToggleLabel() {
+    if (!els.stockDetailsToggleLabel || !state.stock) return;
+    var mode = state.stock.mode;
+    if (mode === "stockin" || mode === "expense") {
+      var sname = (els.stockSupname.value || "").trim();
+      var sphone = (els.stockPhone.value || "").trim();
+      if (sname && sphone) {
+        els.stockDetailsToggleLabel.textContent = "Supplier · " + sname;
+      } else if (sname || sphone) {
+        els.stockDetailsToggleLabel.textContent =
+          "Supplier · " + (sname || sphone);
+      } else {
+        els.stockDetailsToggleLabel.textContent = "Supplier (required)";
+      }
+      return;
+    }
+    if (mode === "sale") {
+      els.stockDetailsToggleLabel.textContent = "Payment & client";
+      return;
+    }
+    if (mode === "trade") {
+      els.stockDetailsToggleLabel.textContent = "Client details";
+    }
   }
 
   function openStock(mode) {
@@ -1557,11 +1813,11 @@
     els.stockPayment.hidden = mode !== "sale";
     els.stockClient.hidden = mode !== "sale" && mode !== "trade";
     if (els.stockDetailsToggle) {
-      var hasDetails = mode === "sale" || mode === "trade";
+      var hasDetails = mode === "sale" || mode === "trade" ||
+        mode === "stockin" || mode === "expense";
       els.stockDetailsToggle.hidden = !hasDetails;
-      els.stockDetailsToggleLabel.textContent =
-        mode === "sale" ? "Payment & client" : "Client details";
       setStockDetails(false);
+      syncDetailsToggleLabel();
     }
     if (els.stockTradeKinds) els.stockTradeKinds.hidden = mode !== "trade";
     els.stockExpense.hidden = mode !== "expense";
@@ -1595,6 +1851,13 @@
       els.stockClientPhone.placeholder = "Client phone (required)";
       els.stockWhatsappWrap.hidden = true;
       syncTradeKind();
+    }
+    if (mode === "stockin" || mode === "expense") {
+      els.stockPhone.value = "";
+      els.stockSupname.value = "";
+      hideSuggest(els.stockPhoneSuggest);
+      hideSuggest(els.stockNameSuggest);
+      syncDetailsToggleLabel();
     }
     if (mode === "expense") {
       els.expenseCategory.value = "";
@@ -1673,12 +1936,18 @@
     hideSuggest(els.stockNameSuggest);
     els.stockPanel.hidden = false;
     els.menu.hidden = true;
+    pushNav("stock");
     setTimeout(function () { els.stockItemInput.focus(); }, 60);
   }
 
-  function closeStock() {
+  function closeStockUi() {
     els.stockPanel.hidden = true;
     state.stock.mode = null;
+  }
+
+  function closeStock() {
+    if (els.stockPanel.hidden && els.scanModal.hidden) return;
+    requestNavClose("stock");
   }
 
   function lineTotalText(l) {
@@ -1760,12 +2029,14 @@
     return '<button type="button" class="wa-stock__pick">' + html + "</button>";
   }
 
-  // On phones the scrollable panel body clips dropdowns — reparent them to
-  // fixed coordinates anchored to their input so they float over the foot.
+  // On phones the scrollable body/details clip dropdowns — pin them to
+  // fixed coordinates so they float over the rest of the panel.
   var mqNarrow = window.matchMedia("(max-width: 639px)");
 
   function floatSuggest(box) {
-    if (!mqNarrow.matches || !box.closest(".wa-stock__body")) {
+    var clipEl = box.closest(".wa-stock__body") ||
+      box.closest(".wa-stock__details");
+    if (!mqNarrow.matches || !clipEl) {
       box.classList.remove("is-float");
       box.style.left = box.style.top = box.style.bottom =
         box.style.width = box.style.maxHeight = box.style.visibility = "";
@@ -1773,11 +2044,9 @@
     }
     var anchorEl = box.parentElement.querySelector("input") || box.parentElement;
     var anchor = anchorEl.getBoundingClientRect();
-    if (els.stockBody) {
-      var brect = els.stockBody.getBoundingClientRect();
-      box.style.visibility =
-        anchor.bottom < brect.top || anchor.top > brect.bottom ? "hidden" : "";
-    }
+    var crect = clipEl.getBoundingClientRect();
+    box.style.visibility =
+      anchor.bottom < crect.top || anchor.top > crect.bottom ? "hidden" : "";
     var vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
     box.classList.add("is-float");
     box.style.left = anchor.left + "px";
@@ -1860,16 +2129,27 @@
   function searchSuppliers(q, box, onPick) {
     clearTimeout(supplierSearchTimer[box === els.stockPhoneSuggest ? "phone" : "name"]);
     var key = box === els.stockPhoneSuggest ? "phone" : "name";
-    if (!q || q.trim().length < 2) {
+    // Live from the first character — phone digits and short names both match.
+    if (!q || !q.trim().length) {
       hideSuggest(box);
       return;
     }
+    var kind = state.stock && state.stock.mode === "expense" ? "expense" : "stock";
     supplierSearchTimer[key] = setTimeout(function () {
-      fetch(URLS.supplierSearch + "?q=" + encodeURIComponent(q.trim()),
-        { credentials: "same-origin" })
+      fetch(
+        URLS.supplierSearch +
+          "?q=" + encodeURIComponent(q.trim()) +
+          "&kind=" + encodeURIComponent(kind),
+        { credentials: "same-origin" }
+      )
         .then(function (r) { return r.json(); })
         .then(function (resp) {
           if (!resp.ok) return;
+          // Ignore stale responses if the field changed while fetching.
+          var current = key === "phone"
+            ? els.stockPhone.value
+            : els.stockSupname.value;
+          if ((current || "").trim() !== q.trim()) return;
           var html = (resp.suppliers || []).map(function (s) {
             return (
               '<button type="button" data-sup="' + s.id + '">' +
@@ -1890,7 +2170,7 @@
           });
         })
         .catch(function () {});
-    }, 220);
+    }, 160);
   }
 
   var clientSearchTimer = null;
@@ -2168,11 +2448,13 @@
       }
       if (!ephone) {
         stockError("Enter the supplier's phone number.");
+        setStockDetails(true);
         els.stockPhone.focus();
         return;
       }
       if (!esname) {
         stockError("Enter the supplier's name.");
+        setStockDetails(true);
         els.stockSupname.focus();
         return;
       }
@@ -2214,11 +2496,13 @@
       var sname = (els.stockSupname.value || "").trim();
       if (!phone) {
         stockError("Enter the supplier's phone number.");
+        setStockDetails(true);
         els.stockPhone.focus();
         return;
       }
       if (!sname) {
         stockError("Enter the supplier's name.");
+        setStockDetails(true);
         els.stockSupname.focus();
         return;
       }
@@ -2355,12 +2639,26 @@
     });
   }
 
+  if (els.groupSettingsBtn) {
+    els.groupSettingsBtn.addEventListener("click", showGroupSettings);
+  }
+  if (els.groupPanelClose) {
+    els.groupPanelClose.addEventListener("click", hideGroupSettings);
+  }
+  if (els.groupSave) {
+    els.groupSave.addEventListener("click", saveGroupName);
+  }
+  if (els.groupDelete) {
+    els.groupDelete.addEventListener("click", deleteGroup);
+  }
+  if (els.groupRename) {
+    els.groupRename.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); saveGroupName(); }
+    });
+  }
+
   els.back.addEventListener("click", function () {
-    root.classList.remove("is-chat-open");
-    state.activeId = null;
-    els.thread.hidden = true;
-    els.empty.hidden = false;
-    renderChatList();
+    requestNavClose("chat");
   });
 
   els.composer.addEventListener("submit", function (e) {
@@ -2510,7 +2808,7 @@
   // Camera barcode scanning (html5-qrcode, vendored)
   var scanner = null;
 
-  function closeScanner() {
+  function closeScannerUi() {
     els.scanModal.hidden = true;
     if (scanner) {
       scanner.stop().catch(function () {}).then(function () {
@@ -2520,12 +2818,18 @@
     }
   }
 
+  function closeScanner() {
+    if (els.scanModal.hidden) return;
+    requestNavClose("scanner");
+  }
+
   function openScanner() {
     if (typeof Html5Qrcode === "undefined") {
       showToast("Camera scanning isn't available in this browser.");
       return;
     }
     els.scanModal.hidden = false;
+    pushNav("scanner");
     refreshIcons();
     scanner = new Html5Qrcode("wa-scan-reader", { verbose: false });
     var config = {
@@ -2593,22 +2897,32 @@
     renderStockLines();
   });
 
+  function pickSupplier(s) {
+    els.stockPhone.value = s.dial + " " + s.phone;
+    els.stockSupname.value = s.name;
+    hideSuggest(els.stockPhoneSuggest);
+    hideSuggest(els.stockNameSuggest);
+    syncDetailsToggleLabel();
+  }
+
   els.stockPhone.addEventListener("input", function () {
-    searchSuppliers(els.stockPhone.value, els.stockPhoneSuggest, function (s) {
-      els.stockPhone.value = s.dial + " " + s.phone;
-      if (!els.stockSupname.value.trim()) els.stockSupname.value = s.name;
-      hideSuggest(els.stockPhoneSuggest);
-    });
+    syncDetailsToggleLabel();
+    searchSuppliers(els.stockPhone.value, els.stockPhoneSuggest, pickSupplier);
+  });
+  els.stockPhone.addEventListener("focus", function () {
+    if ((els.stockPhone.value || "").trim()) {
+      searchSuppliers(els.stockPhone.value, els.stockPhoneSuggest, pickSupplier);
+    }
   });
 
   els.stockSupname.addEventListener("input", function () {
-    searchSuppliers(els.stockSupname.value, els.stockNameSuggest, function (s) {
-      els.stockSupname.value = s.name;
-      if (!els.stockPhone.value.trim()) {
-        els.stockPhone.value = s.dial + " " + s.phone;
-      }
-      hideSuggest(els.stockNameSuggest);
-    });
+    syncDetailsToggleLabel();
+    searchSuppliers(els.stockSupname.value, els.stockNameSuggest, pickSupplier);
+  });
+  els.stockSupname.addEventListener("focus", function () {
+    if ((els.stockSupname.value || "").trim()) {
+      searchSuppliers(els.stockSupname.value, els.stockNameSuggest, pickSupplier);
+    }
   });
 
   els.stockClientName.addEventListener("input", function () {
@@ -2707,12 +3021,24 @@
   els.stockSubmit.addEventListener("click", submitStock);
   if (els.stockDetailsToggle) {
     els.stockDetailsToggle.addEventListener("click", function () {
-      setStockDetails(els.stockDetails.hidden);
+      var opening = els.stockDetails.hidden;
+      setStockDetails(opening);
       repositionFloatSuggests();
+      if (opening && state.stock &&
+          (state.stock.mode === "stockin" || state.stock.mode === "expense")) {
+        setTimeout(function () {
+          if (!(els.stockPhone.value || "").trim()) els.stockPhone.focus();
+          else if (!(els.stockSupname.value || "").trim()) els.stockSupname.focus();
+        }, 40);
+      }
     });
   }
   if (els.stockBody) {
     els.stockBody.addEventListener("scroll", repositionFloatSuggests,
+      { passive: true });
+  }
+  if (els.stockDetails) {
+    els.stockDetails.addEventListener("scroll", repositionFloatSuggests,
       { passive: true });
   }
   window.addEventListener("resize", repositionFloatSuggests);

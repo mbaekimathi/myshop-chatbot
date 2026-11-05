@@ -10,11 +10,20 @@
   var csrf = form.querySelector("[name=csrfmiddlewaretoken]").value;
   var sugs = document.getElementById("allSugs");
 
-  // Keep the app exactly as tall as the visible viewport (mobile URL bar,
-  // on-screen keyboard) so the composer stays on screen.
+  // Keep the app locked to the visible viewport; undo Android keyboard pan.
   function syncViewportHeight() {
-    var h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-    if (h && appShell) appShell.style.setProperty("--wa-vvh", Math.round(h) + "px");
+    if (!appShell) return;
+    var vv = window.visualViewport;
+    var h = vv ? vv.height : window.innerHeight;
+    var top = vv ? vv.offsetTop : 0;
+    var left = vv ? vv.offsetLeft : 0;
+    if (h) appShell.style.setProperty("--wa-vvh", Math.round(h) + "px");
+    appShell.style.transform = (top || left)
+      ? "translate(" + Math.round(left) + "px," + Math.round(top) + "px)"
+      : "";
+    if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+    var kb = !!(vv && (window.innerHeight - vv.height > 120 || top > 0));
+    appShell.classList.toggle("is-kb", kb);
   }
 
   syncViewportHeight();
@@ -22,6 +31,7 @@
   window.addEventListener("orientationchange", syncViewportHeight);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", syncViewportHeight);
+    window.visualViewport.addEventListener("scroll", syncViewportHeight);
   }
 
   var period = document.getElementById("allPeriod");

@@ -3466,12 +3466,27 @@
     if (!document.hidden) pollNow();
   });
 
-  // Keep the app exactly as tall as the visible viewport so bottom
-  // controls (FABs, composer) never slip under the mobile URL bar or
-  // the on-screen keyboard.
+  // Keep the app locked to the *visible* viewport. Android Chrome often
+  // pans the layout when the keyboard opens (offsetTop > 0) while we also
+  // shrink --wa-vvh — that combination leaves a black strip under the
+  // stock panel. Undo the pan and pin height to visualViewport.
   function syncViewportHeight() {
-    var h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    var vv = window.visualViewport;
+    var h = vv ? vv.height : window.innerHeight;
+    var top = vv ? vv.offsetTop : 0;
+    var left = vv ? vv.offsetLeft : 0;
     if (h) root.style.setProperty("--wa-vvh", Math.round(h) + "px");
+    root.style.transform = (top || left)
+      ? "translate(" + Math.round(left) + "px," + Math.round(top) + "px)"
+      : "";
+    if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+    if (document.documentElement.scrollTop) {
+      document.documentElement.scrollTop = 0;
+    }
+    if (document.body.scrollTop) document.body.scrollTop = 0;
+    // Soft keyboard open — relax stock min-heights that fight the shorter pane.
+    var kb = !!(vv && (window.innerHeight - vv.height > 120 || top > 0));
+    root.classList.toggle("is-kb", kb);
   }
 
   syncViewportHeight();
@@ -3479,6 +3494,31 @@
   window.addEventListener("orientationchange", syncViewportHeight);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", syncViewportHeight);
+    window.visualViewport.addEventListener("scroll", syncViewportHeight);
+  }
+
+  // Stock panel inputs: browser scroll-into-view also causes the black
+  // gap — cancel document scroll and keep the focused field inside the
+  // panel's own scroll areas instead.
+  if (els.stockPanel) {
+    els.stockPanel.addEventListener("focusin", function (e) {
+      var target = e.target;
+      setTimeout(function () {
+        syncViewportHeight();
+        if (!target || !els.stockPanel.contains(target)) return;
+        try {
+          target.scrollIntoView({ block: "nearest", inline: "nearest" });
+        } catch (err) {
+          target.scrollIntoView(false);
+        }
+        syncViewportHeight();
+      }, 50);
+      setTimeout(syncViewportHeight, 300);
+    });
+    els.stockPanel.addEventListener("focusout", function () {
+      setTimeout(syncViewportHeight, 50);
+      setTimeout(syncViewportHeight, 300);
+    });
   }
 
   // ------------------------------------------------------------------

@@ -516,6 +516,9 @@ body.page-chat {
   max-height: 100vh;
   max-height: 100dvh;
   overflow: hidden;
+  background: #0b141a;
+  overscroll-behavior: none;
+  touch-action: manipulation;
 }
 
 .comms {
@@ -567,6 +570,8 @@ html[data-theme="dark"] .comms {
   position: relative;
   overflow: hidden;
   background: var(--wa-app-bg);
+  /* transform is applied by JS to cancel keyboard pan (offsetTop) */
+  will-change: transform;
 }
 
 .wa-app__bar {
@@ -3616,7 +3621,7 @@ html[data-theme="dark"] .wa-stock__total {
 
   .wa-stock__body {
     flex: 1 1 auto;
-    min-height: 8rem; /* never collapse the cart into a blank pane */
+    min-height: 0;
     padding: 0.7rem 0.75rem 1rem;
   }
 
@@ -3629,10 +3634,20 @@ html[data-theme="dark"] .wa-stock__total {
     max-height: 100%;
   }
 
-  /* Soft keyboard: keep focused footer fields reachable without
-     rubber-banding the whole panel into empty space */
-  .wa-stock__foot:focus-within {
-    max-height: min(58%, 22rem);
+  /* Soft keyboard open (.is-kb from visualViewport sync): drop caps so the
+     foot (staff code / supplier) packs against the keyboard with no void. */
+  .comms.wa-app.is-kb .wa-stock__body {
+    min-height: 0;
+    flex: 1 1 0;
+  }
+
+  .comms.wa-app.is-kb .wa-stock__foot {
+    max-height: none;
+    flex: 0 0 auto;
+  }
+
+  .comms.wa-app.is-kb .wa-stock__foot:focus-within {
+    max-height: none;
   }
 }
 
@@ -3640,6 +3655,5 @@ html[data-theme="dark"] .wa-stock__total {
   .wa-stock-line__ctrls { gap: 0.3rem 0.4rem; }
   .wa-stock-line input[type="number"].wa-stock-line__price { width: 4.9rem; }
 
-  .wa-stock__body { min-height: 7rem; }
   .wa-stock__foot { max-height: 46%; }
 }

@@ -112,6 +112,36 @@ class ChatTestCase(TransactionTestCase):
         )
 
 
+class IconTests(ChatTestCase):
+    def test_icon_falls_back_to_my_shop(self):
+        from . import icons
+
+        self.assertEqual(icons.icon_label(), "MY SHOP")
+        png = icons.render_app_icon(192, rounded=True)
+        self.assertTrue(png.startswith(b"\x89PNG"))
+
+    def test_icon_uses_company_name(self):
+        from . import icons
+
+        CompanyProfile.objects.create(
+            name="Acme Retail",
+            phone_number="0700",
+            email="a@x.co",
+            location="Nairobi",
+        )
+        self.assertEqual(icons.icon_label(), "Acme Retail")
+
+    def test_app_icon_endpoint_and_manifest(self):
+        resp = self.client.get(reverse("chat:app_icon", kwargs={"size": 192}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "image/png")
+        self.assertTrue(resp.content.startswith(b"\x89PNG"))
+
+        manifest = self.client.get(reverse("chat:manifest")).json()
+        self.assertTrue(manifest["icons"])
+        self.assertTrue(manifest["icons"][0]["src"].startswith("/icon-"))
+
+
 class AuthTests(ChatTestCase):
     def test_login_success(self):
         resp = self.login()

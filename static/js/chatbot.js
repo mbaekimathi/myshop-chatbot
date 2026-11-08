@@ -1381,8 +1381,8 @@
         var n = new Notification(opts.title, {
           body: opts.body,
           tag: "mychat-" + (opts.convoId || "app"),
-          icon: "/static/img/icon-192.png",
-          badge: "/static/img/icon-192.png"
+          icon: "/icon-192.png?rounded=1",
+          badge: "/icon-192.png?rounded=1"
         });
         n.onclick = function () {
           window.focus();

@@ -1,5 +1,6 @@
 """Pages + JSON polling API for MY-CHATBOT."""
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -7,13 +8,14 @@ import os
 import re
 
 from django.core.cache import cache
-from django.http import FileResponse, Http404, JsonResponse
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
 from . import bot as bot_engine
+from . import icons as icon_ops
 from . import services
 from . import stock as stock_ops
 from .auth import (
@@ -164,27 +166,61 @@ def home(request):
 
 
 @require_GET
+def app_icon(request, size: int):
+    """PNG app icon branded with the company name (fallback: MY SHOP).
+
+    Unauthenticated on purpose — favicon / PWA / notification fetches often
+    carry no session. `rounded=1` bakes a soft squircle for favicons.
+    """
+    if size not in (192, 512):
+        raise Http404()
+    rounded = request.GET.get("rounded") in {"1", "true", "any"}
+    label = icon_ops.icon_label()
+    # Memcached-safe key (no spaces / punctuation from company names).
+    digest = hashlib.sha1(f"{size}:{int(rounded)}:{label}".encode()).hexdigest()[:16]
+    cache_key = f"chat:app-icon:{digest}"
+    png = cache.get(cache_key)
+    if not png:
+        png = icon_ops.render_app_icon(size, rounded=rounded)
+        cache.set(cache_key, png, 3600)
+    resp = HttpResponse(png, content_type="image/png")
+    resp["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+@require_GET
 def manifest(request):
     """PWA manifest — rendered dynamically so the install name follows the
     company name set in MY-SHOP settings. Unauthenticated on purpose: manifest
     fetches carry no credentials."""
     name = services.app_name()
+    icon_192 = reverse("chat:app_icon", kwargs={"size": 192})
+    icon_512 = reverse("chat:app_icon", kwargs={"size": 512})
     icons = [
         {
-            "src": "/static/img/icon-192.png",
+            "src": f"{icon_192}?rounded=1",
             "sizes": "192x192",
             "type": "image/png",
-            "purpose": purpose,
-        }
-        for purpose in ("any", "maskable")
-    ] + [
+            "purpose": "any",
+        },
         {
-            "src": "/static/img/icon-512.png",
+            "src": icon_192,
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "maskable",
+        },
+        {
+            "src": f"{icon_512}?rounded=1",
             "sizes": "512x512",
             "type": "image/png",
-            "purpose": purpose,
-        }
-        for purpose in ("any", "maskable")
+            "purpose": "any",
+        },
+        {
+            "src": icon_512,
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable",
+        },
     ]
     return JsonResponse(
         {

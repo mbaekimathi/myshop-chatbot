@@ -31,12 +31,19 @@ Shares the `myshop` database with MY-SHOP:
 ## Quick start (local, XAMPP)
 
 ```bash
+cp .env.example .env
+# Edit `.env` — set MYSQL_ENABLED=True and your MySQL name/user/password/host.
+# Leave DB fields blank (or MYSQL_ENABLED=False) to use SQLite for a dry run.
+
 pip install -r requirements.txt
 python manage.py migrate
 python manage.py runserver
 ```
 
 Open http://127.0.0.1:8000/ and sign in with a shop's code + password.
+
+**Secrets:** `.env` and `.secret_key` are gitignored. Only `.env.example`
+(no DB credentials) ships with the repo.
 
 ## Tests
 

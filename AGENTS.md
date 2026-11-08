@@ -89,6 +89,9 @@ fallback "MY-SHOP") — `services.app_name()` = "<Company> Chat",
 `bot_name()` = "<Company> Assistant", `bot_welcome(shop)` the greeting.
 The PWA manifest is NOT a static file: `GET /manifest.json` → `views.manifest`
 renders it dynamically so the install name follows the company name.
+App icons are also dynamic: `GET /icon-192.png` / `/icon-512.png` →
+`views.app_icon` draws the company name (fallback **MY SHOP**) via
+`chat/icons.py`; `static/img/icon-*.png` are offline fallbacks only.
 
 ## Realtime
 No websockets — `GET /api/poll/?conversation_id=&after_id=` returns the

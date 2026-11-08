@@ -1,6 +1,13 @@
+# Secrets / local machine — never push these
 .env
+.env.local
+.env.*.local
 .secret_key
 .production
+
+# Keep the template cloneable (no real DB credentials)
+!.env.example
+
 __pycache__/
 *.py[cod]
 .venv/

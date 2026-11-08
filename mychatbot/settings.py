@@ -15,8 +15,6 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-load_dotenv(BASE_DIR / ".env")
-
 
 def env_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -24,6 +22,10 @@ def env_bool(name: str, default: bool = False) -> bool:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
+
+# Always let .env win — cPanel injects placeholder MYSQL_* into the process
+# env, and python-dotenv skips those keys unless override=True.
+load_dotenv(BASE_DIR / ".env", override=True)
 
 APP_ENV = (os.getenv("APP_ENV") or "").strip().lower()
 IS_HOSTED = APP_ENV == "production" or (BASE_DIR / ".production").exists()

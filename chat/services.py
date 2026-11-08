@@ -28,7 +28,7 @@ def company_name() -> str:
     try:
         row = CompanyProfile.objects.first()
         if row and row.name.strip():
-            return row.name.strip()
+            return " ".join(row.name.split())
     except Exception:
         pass
     return "MY-SHOP"

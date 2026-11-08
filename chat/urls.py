@@ -15,6 +15,28 @@ urlpatterns = [
     path("all/", views.all_shops_view, name="all_shops"),
     path("api/all/chat/", views.api_all_chat, name="api_all_chat"),
     path("chat/", views.app_view, name="app"),
+    path("chat/receipts/", views.receipts_view, name="receipts"),
+    path("api/receipts/", views.api_receipts_list, name="api_receipts_list"),
+    path(
+        "api/receipts/<int:receipt_id>/",
+        views.api_receipt_detail,
+        name="api_receipt_detail",
+    ),
+    path(
+        "api/receipts/confirm/",
+        views.api_receipts_confirm,
+        name="api_receipts_confirm",
+    ),
+    path(
+        "api/receipts/cancel/",
+        views.api_receipts_cancel,
+        name="api_receipts_cancel",
+    ),
+    path(
+        "api/receipts/return/",
+        views.api_receipts_return,
+        name="api_receipts_return",
+    ),
     path("api/poll/", views.api_poll, name="api_poll"),
     path("api/open/", views.api_open, name="api_open"),
     path("api/groups/", views.api_group_create, name="api_group_create"),

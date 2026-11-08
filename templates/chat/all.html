@@ -65,18 +65,31 @@
         <button type="button" class="wa-fab" data-fab="sale" title="New sale" aria-label="New sale">
           <i data-lucide="shopping-cart" aria-hidden="true"></i>
         </button>
-        <button type="button" class="wa-fab" data-fab="stockin" title="Stock in" aria-label="Stock in">
-          <i data-lucide="package-plus" aria-hidden="true"></i>
-        </button>
-        <button type="button" class="wa-fab" data-fab="transfer" title="Transfer stock" aria-label="Transfer stock">
-          <i data-lucide="arrow-right-left" aria-hidden="true"></i>
-        </button>
-        <button type="button" class="wa-fab" data-fab="trade" title="Trade" aria-label="Trade">
-          <i data-lucide="repeat" aria-hidden="true"></i>
-        </button>
-        <button type="button" class="wa-fab" data-fab="expense" title="Register expense" aria-label="Register expense">
-          <i data-lucide="wallet" aria-hidden="true"></i>
-        </button>
+        <div class="wa-fab-group" data-fab-others>
+          <div class="wa-fab-more" data-fab-more hidden>
+            <button type="button" data-fab="stockin">
+              <i data-lucide="package-plus" aria-hidden="true"></i><span>Stock in</span>
+            </button>
+            <button type="button" data-fab="transfer">
+              <i data-lucide="arrow-right-left" aria-hidden="true"></i><span>Transfer</span>
+            </button>
+            <button type="button" data-fab="trade_out">
+              <i data-lucide="repeat" aria-hidden="true"></i><span>Trade out</span>
+            </button>
+            <button type="button" data-fab="trade_in">
+              <i data-lucide="repeat" aria-hidden="true"></i><span>Trade in</span>
+            </button>
+            <button type="button" data-fab="expense">
+              <i data-lucide="wallet" aria-hidden="true"></i><span>Expense</span>
+            </button>
+            <button type="button" data-fab="receipts">
+              <i data-lucide="receipt" aria-hidden="true"></i><span>Receipts</span>
+            </button>
+          </div>
+          <button type="button" class="wa-fab" data-fab-others-toggle title="Others" aria-label="Others" aria-expanded="false" aria-haspopup="true">
+            <i data-lucide="ellipsis" aria-hidden="true"></i>
+          </button>
+        </div>
       </div>
 
       <div class="wa-menu all-menu" id="allFabMenu" hidden>
@@ -174,5 +187,5 @@
 
 {% block extra_js %}
 <script type="application/json" id="all-init-receipt-status">{{ receipt_status_default_json|safe }}</script>
-<script defer src="{% static 'js/all.js' %}?v=14"></script>
+<script defer src="{% static 'js/all.js' %}?v=17"></script>
 {% endblock %}

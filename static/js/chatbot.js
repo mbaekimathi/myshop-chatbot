@@ -212,6 +212,7 @@
     stockSupplier: root.querySelector("[data-stock-supplier]"),
     stockPayment: root.querySelector("[data-stock-payment]"),
     stockClient: root.querySelector("[data-stock-client]"),
+    stockCheckout: root.querySelector("[data-stock-checkout]"),
     stockDetails: root.querySelector("[data-stock-details]"),
     stockDetailsToggle: root.querySelector("[data-stock-detailstoggle]"),
     stockDetailsToggleLabel: root.querySelector("[data-stock-detailstoggle-label]"),
@@ -219,10 +220,13 @@
     stockTradeHint: root.querySelector("[data-stock-tradehint]"),
     stockItemWrap: root.querySelector("[data-stock-itemwrap]"),
     stockExpense: root.querySelector("[data-stock-expense]"),
+    stockItemAdd: root.querySelector("[data-stock-itemadd]"),
+    stockListLabel: root.querySelector("[data-stock-listlabel]"),
     expenseCategory: root.querySelector("[data-expense-category]"),
     expenseName: root.querySelector("[data-expense-name]"),
     expenseAmount: root.querySelector("[data-expense-amount]"),
     expenseStatus: root.querySelector("[data-expense-status]"),
+    expenseAdd: root.querySelector("[data-expense-add]"),
     stockKind: root.querySelector("[data-stock-kind]"),
     stockDueDate: root.querySelector("[data-stock-duedate]"),
     stockPayMethod: root.querySelector("[data-stock-paymethod]"),
@@ -682,6 +686,21 @@
     }
     if (card.expense) {
       var xp = card.expense;
+      var xitems = xp.items || [];
+      if (xitems.length > 1) {
+        var xrows = xitems.map(function (r, i) {
+          return "<tr><td class=\"n\">" + (i + 1) + "</td><td>" +
+            escapeHtml(r.name) + "</td><td>" +
+            escapeHtml(r.category || "") +
+            "</td><td class=\"n\">" + escapeHtml(r.amount) + "</td></tr>";
+        }).join("");
+        return tableCard("wallet", "Expenses", [
+          ["#"], ["Expense"], ["Category"], ["Amount", 1]
+        ], xrows, "<b>KSh " + escapeHtml(xp.amount || "0.00") + "</b>" +
+          (xp.status ? " · " + escapeHtml(xp.status) : "") +
+          (xp.supplier ? " · " + escapeHtml(xp.supplier) : "") +
+          (xp.shop ? " · " + escapeHtml(xp.shop) : ""));
+      }
       return statCard("wallet", "Expense", [
         ["Expense", xp.name],
         ["Category", xp.category || "—"],
@@ -1741,6 +1760,19 @@
     return m === "sale" || m === "stockin" || m === "trade" || m === "quickin";
   }
 
+  function expenseMode() {
+    return stockMode() === "expense";
+  }
+
+  function expenseCategoryLabel(value) {
+    if (!els.expenseCategory) return value || "";
+    var opts = els.expenseCategory.options;
+    for (var i = 0; i < opts.length; i++) {
+      if (opts[i].value === value) return opts[i].textContent;
+    }
+    return value || "";
+  }
+
   function tradeKind() {
     var checked = els.stockTradeKinds
       ? els.stockTradeKinds.querySelector("[data-trade-kind]:checked")
@@ -1771,6 +1803,7 @@
     if (!els.stockDetails || !els.stockDetailsToggle) return;
     els.stockDetails.hidden = !open;
     els.stockDetailsToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    if (els.stockCheckout) els.stockCheckout.classList.toggle("is-open", !!open);
     if (open) syncDetailsToggleLabel();
   }
 
@@ -1799,10 +1832,31 @@
     }
   }
 
+  function selectTradeKind(kind) {
+    if (!els.stockTradeKinds || !kind) return;
+    var radio = els.stockTradeKinds.querySelector(
+      '[data-trade-kind][value="' + kind + '"]'
+    );
+    if (radio) radio.checked = true;
+  }
+
   function openStock(mode) {
     var convo = findConvo(state.activeId);
+    var preferredTradeKind = null;
+    if (mode === "trade_in" || mode === "trade_out") {
+      preferredTradeKind = mode;
+      mode = "trade";
+    }
     if (mode === "trade" && !me.trade_out && !me.trade_in) {
       showToast("Trade is disabled for this shop.");
+      return;
+    }
+    if (preferredTradeKind === "trade_out" && !me.trade_out) {
+      showToast("Trade out is disabled for this shop.");
+      return;
+    }
+    if (preferredTradeKind === "trade_in" && !me.trade_in) {
+      showToast("Trade in is disabled for this shop.");
       return;
     }
     state.stock = { mode: mode, lines: [], picked: null, serials: [], submitting: false };
@@ -1829,7 +1883,12 @@
     }
     if (els.stockTradeKinds) els.stockTradeKinds.hidden = mode !== "trade";
     els.stockExpense.hidden = mode !== "expense";
-    if (els.stockItemWrap) els.stockItemWrap.hidden = mode === "expense";
+    // Expense reuses the parked-lines list; hide the item-search add block.
+    if (els.stockItemWrap) els.stockItemWrap.hidden = false;
+    if (els.stockItemAdd) els.stockItemAdd.hidden = mode === "expense";
+    if (els.stockListLabel) {
+      els.stockListLabel.textContent = mode === "expense" ? "Expenses" : "Items";
+    }
     els.stockPrice.hidden = !pricedMode();
     els.stockPrice.placeholder = mode === "sale" || mode === "trade"
       ? "Sell price (optional — defaults to shop price)"
@@ -1858,6 +1917,7 @@
       els.stockClientName.placeholder = "Client full name (required)";
       els.stockClientPhone.placeholder = "Client phone (required)";
       els.stockWhatsappWrap.hidden = true;
+      if (preferredTradeKind) selectTradeKind(preferredTradeKind);
       syncTradeKind();
     }
     if (mode === "stockin" || mode === "expense") {
@@ -1872,7 +1932,9 @@
       els.expenseName.value = "";
       els.expenseAmount.value = "";
       els.expenseStatus.value = "paid";
-      setTimeout(function () { els.expenseName.focus(); }, 60);
+      // No items list competing for space — open supplier up front so
+      // the required phone/name fields aren't buried under the toggle.
+      setStockDetails(true);
     }
     els.stockStaffCode.value = "";
     els.stockCodeBox.hidden = false;
@@ -1920,6 +1982,8 @@
         ? (tradeKind() === "trade_in"
           ? "Add the items the client is bringing."
           : "Add the items the client is taking.")
+        : mode === "expense"
+        ? "Add expenses with the form above, then enter supplier details."
         : "Add the items you received.";
     if (mode === "transfer") {
       els.stockDest.innerHTML = state.contacts
@@ -1945,7 +2009,10 @@
     els.stockPanel.hidden = false;
     els.menu.hidden = true;
     pushNav("stock");
-    setTimeout(function () { els.stockItemInput.focus(); }, 60);
+    setTimeout(function () {
+      if (mode === "expense") els.expenseName.focus();
+      else els.stockItemInput.focus();
+    }, 60);
   }
 
   function closeStockUi() {
@@ -1970,7 +2037,33 @@
 
   function renderStockLines() {
     var priced = pricedMode();
+    var isExpense = expenseMode();
     var rows = state.stock.lines.map(function (line, i) {
+      if (isExpense) {
+        var amt = parseFloat(line.amount) || 0;
+        return '<div class="wa-stock-line" data-line="' + i + '">' +
+          '<div class="wa-stock-line__top">' +
+          '<span class="wa-stock-line__name">' + escapeHtml(line.name) +
+          '<small class="wa-stock-line__have"> · ' +
+          escapeHtml(line.category_label || expenseCategoryLabel(line.category)) +
+          "</small></span>" +
+          '<button type="button" class="wa-stock-line__remove" ' +
+          'data-line-remove="' + i +
+          '" aria-label="Remove"><i data-lucide="x"></i></button></div>' +
+          '<div class="wa-stock-line__ctrls">' +
+          '<span class="wa-stock-line__op">KSh</span>' +
+          '<input type="number" class="wa-stock-line__price" min="0" step="any" ' +
+          'title="Amount" placeholder="0.00" value="' +
+          escapeHtml(line.amount || "") + '" data-line-amount="' + i + '">' +
+          '<span class="wa-stock-line__ltotal" data-line-ltotal="' + i + '">' +
+          (amt > 0
+            ? "KSh " + amt.toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+              })
+            : "") +
+          "</span></div></div>";
+      }
       var qtyCell = line.serials
         ? '<span class="wa-stock-line__have">' + line.serials.length +
           " SN</span>"
@@ -2019,18 +2112,52 @@
   }
 
   function refreshStockTotal() {
-    var priced = pricedMode();
     var lines = state.stock ? state.stock.lines : [];
-    var has = priced && lines.length > 0;
+    var isExpense = expenseMode();
+    var priced = pricedMode();
+    var has = (priced || isExpense) && lines.length > 0;
     els.stockTotal.hidden = !has;
     if (!has) return;
     var total = lines.reduce(function (sum, l) {
+      if (isExpense) return sum + (parseFloat(l.amount) || 0);
       var q = l.serials ? l.serials.length : parseFloat(l.quantity) || 0;
       var p = parseFloat(l.buying_price) || 0;
       return sum + q * p;
     }, 0);
     els.stockTotalVal.textContent = "KSh " +
       total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function addExpenseLine() {
+    var category = (els.expenseCategory.value || "").trim();
+    var name = (els.expenseName.value || "").trim().toUpperCase();
+    var amount = (els.expenseAmount.value || "").trim();
+    if (!category) {
+      stockError("Choose an expense category.");
+      els.expenseCategory.focus();
+      return;
+    }
+    if (!name) {
+      stockError("Enter the expense name.");
+      els.expenseName.focus();
+      return;
+    }
+    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+      stockError("Enter an amount greater than zero.");
+      els.expenseAmount.focus();
+      return;
+    }
+    state.stock.lines.push({
+      category: category,
+      category_label: expenseCategoryLabel(category),
+      name: name,
+      amount: amount
+    });
+    els.expenseName.value = "";
+    els.expenseAmount.value = "";
+    stockError("");
+    renderStockLines();
+    els.expenseName.focus();
   }
 
   function suggestRow(html) {
@@ -2369,11 +2496,31 @@
   function submitStock() {
     if (state.stock.submitting) return;
     var mode = stockMode();
+    // Park a filled expense draft if the user typed one and forgot Add.
+    if (mode === "expense") {
+      var draftName = (els.expenseName.value || "").trim();
+      var draftAmount = (els.expenseAmount.value || "").trim();
+      if (draftName || draftAmount || els.expenseCategory.value) {
+        if (!els.expenseCategory.value || !draftName ||
+            !draftAmount || isNaN(parseFloat(draftAmount)) ||
+            parseFloat(draftAmount) <= 0) {
+          stockError("Finish the expense draft or clear it, then tap Add.");
+          if (!els.expenseCategory.value) els.expenseCategory.focus();
+          else if (!draftName) els.expenseName.focus();
+          else els.expenseAmount.focus();
+          return;
+        }
+        addExpenseLine();
+      }
+    }
     if (!state.stock.lines.length) {
-      stockError("Add at least one item with a quantity.");
+      stockError(mode === "expense"
+        ? "Add at least one expense."
+        : "Add at least one item with a quantity.");
+      if (mode === "expense") els.expenseName.focus();
       return;
     }
-    // Sync editable qty + price inputs back into lines.
+    // Sync editable qty + price / expense amount inputs back into lines.
     els.stockItems.querySelectorAll("[data-line-qty]").forEach(function (inp) {
       var i = parseInt(inp.dataset.lineQty, 10);
       state.stock.lines[i].quantity = inp.value;
@@ -2381,6 +2528,10 @@
     els.stockItems.querySelectorAll("[data-line-price]").forEach(function (inp) {
       var i = parseInt(inp.dataset.linePrice, 10);
       state.stock.lines[i].buying_price = inp.value;
+    });
+    els.stockItems.querySelectorAll("[data-line-amount]").forEach(function (inp) {
+      var i = parseInt(inp.dataset.lineAmount, 10);
+      if (state.stock.lines[i]) state.stock.lines[i].amount = inp.value;
     });
     var payload;
     if (mode === "sale") {
@@ -2437,22 +2588,14 @@
     } else if (mode === "expense") {
       var ephone = (els.stockPhone.value || "").trim();
       var esname = (els.stockSupname.value || "").trim();
-      var ename = (els.expenseName.value || "").trim();
-      var eamount = (els.expenseAmount.value || "").trim();
-      if (!els.expenseCategory.value) {
-        stockError("Choose an expense category.");
-        els.expenseCategory.focus();
-        return;
-      }
-      if (!ename) {
-        stockError("Enter the expense name.");
-        els.expenseName.focus();
-        return;
-      }
-      if (!eamount || isNaN(parseFloat(eamount)) || parseFloat(eamount) <= 0) {
-        stockError("Enter an amount greater than zero.");
-        els.expenseAmount.focus();
-        return;
+      for (var ei = 0; ei < state.stock.lines.length; ei++) {
+        var eline = state.stock.lines[ei];
+        var eamt = parseFloat(eline.amount);
+        if (!eline.category || !(eline.name || "").trim() ||
+            !eamt || isNaN(eamt) || eamt <= 0) {
+          stockError("Every expense needs a category, name, and amount.");
+          return;
+        }
       }
       if (!ephone) {
         stockError("Enter the supplier's phone number.");
@@ -2467,9 +2610,13 @@
         return;
       }
       payload = {
-        category: els.expenseCategory.value,
-        name: ename,
-        amount: eamount,
+        lines: state.stock.lines.map(function (l) {
+          return {
+            category: l.category,
+            name: l.name,
+            amount: l.amount
+          };
+        }),
         payment_status: els.expenseStatus.value,
         supplier_name: esname,
         supplier_phone: ephone,
@@ -2744,10 +2891,42 @@
 
   els.stockClose.addEventListener("click", closeStock);
 
-  els.fabs.addEventListener("click", function (e) {
-    var btn = e.target.closest("[data-fab]");
-    if (btn) openStock(btn.dataset.fab);
-  });
+  function setOthersOpen(open) {
+    if (!els.fabs) return;
+    var more = els.fabs.querySelector("[data-fab-more]");
+    var toggle = els.fabs.querySelector("[data-fab-others-toggle]");
+    if (!more || !toggle) return;
+    more.hidden = !open;
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.classList.toggle("is-open", open);
+    if (open) refreshIcons();
+  }
+
+  if (els.fabs) {
+    els.fabs.addEventListener("click", function (e) {
+      var othersToggle = e.target.closest("[data-fab-others-toggle]");
+      if (othersToggle) {
+        e.stopPropagation();
+        var more = els.fabs.querySelector("[data-fab-more]");
+        setOthersOpen(more && more.hidden);
+        return;
+      }
+      var btn = e.target.closest("[data-fab]");
+      if (btn) {
+        setOthersOpen(false);
+        if (btn.dataset.fab === "receipts") {
+          var receiptsUrl = root.dataset.receiptsUrl || "/chat/receipts/";
+          window.location.href = receiptsUrl;
+          return;
+        }
+        openStock(btn.dataset.fab);
+      }
+    });
+
+    document.addEventListener("click", function (e) {
+      if (!e.target.closest("[data-fab-others]")) setOthersOpen(false);
+    });
+  }
 
   els.stockItemInput.addEventListener("input", function () {
     state.stock.picked = null;
@@ -2875,6 +3054,25 @@
   els.scanClose.addEventListener("click", closeScanner);
 
   els.stockAdd.addEventListener("click", addStockLine);
+  if (els.expenseAdd) {
+    els.expenseAdd.addEventListener("click", addExpenseLine);
+  }
+  if (els.expenseName) {
+    els.expenseName.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addExpenseLine();
+      }
+    });
+  }
+  if (els.expenseAmount) {
+    els.expenseAmount.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addExpenseLine();
+      }
+    });
+  }
 
   els.stockItems.addEventListener("click", function (e) {
     var step = e.target.closest("[data-line-step]");
@@ -3005,7 +3203,7 @@
   els.stockStaffCode.addEventListener("keydown", function (e) {
     if (e.key === "Enter") submitStock();
   });
-  // Live qty/price edits update the per-line and grand totals.
+  // Live qty/price/amount edits update the per-line and grand totals.
   els.stockItems.addEventListener("input", function (e) {
     var q = e.target.closest("[data-line-qty]");
     if (q) {
@@ -3016,6 +3214,23 @@
     if (p) {
       var pi = parseInt(p.dataset.linePrice, 10);
       if (state.stock.lines[pi]) state.stock.lines[pi].buying_price = p.value;
+    }
+    var a = e.target.closest("[data-line-amount]");
+    if (a) {
+      var ai = parseInt(a.dataset.lineAmount, 10);
+      if (state.stock.lines[ai]) state.stock.lines[ai].amount = a.value;
+      var atot = els.stockItems.querySelector('[data-line-ltotal="' + ai + '"]');
+      if (atot) {
+        var amt = parseFloat(a.value) || 0;
+        atot.textContent = amt > 0
+          ? "KSh " + amt.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2
+            })
+          : "";
+      }
+      refreshStockTotal();
+      return;
     }
     if (!q && !p) return;
     var i = parseInt((q || p).dataset.lineQty || (q || p).dataset.linePrice, 10);
@@ -3575,13 +3790,14 @@
   schedule();
 
   // Deep link from the all-shops page: /chat/?fab=sale|stockin|transfer|
-  // trade|expense opens that stock panel immediately.
+  // trade|trade_in|trade_out|expense opens that stock panel immediately.
   var fabParam = "";
   try {
     fabParam = new URLSearchParams(window.location.search).get("fab") || "";
   } catch (e) {}
   if (fabParam === "sale" || fabParam === "stockin" ||
       fabParam === "transfer" || fabParam === "trade" ||
+      fabParam === "trade_in" || fabParam === "trade_out" ||
       fabParam === "expense") {
     openStock(fabParam);
     try {

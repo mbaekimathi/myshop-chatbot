@@ -556,20 +556,47 @@
   var fabMode = document.getElementById("allFabMode");
   var FAB_LABELS = {
     sale: "New sale", stockin: "Stock in", transfer: "Transfer stock",
-    trade: "Trade", expense: "Register expense"
+    trade: "Trade", trade_out: "Trade out", trade_in: "Trade in",
+    expense: "Register expense", receipts: "Receipts"
   };
+  var fabMore = fabs ? fabs.querySelector("[data-fab-more]") : null;
+  var fabOthersToggle = fabs
+    ? fabs.querySelector("[data-fab-others-toggle]")
+    : null;
+
+  function setOthersOpen(open) {
+    if (!fabMore || !fabOthersToggle) return;
+    fabMore.hidden = !open;
+    fabOthersToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    fabOthersToggle.classList.toggle("is-open", open);
+    if (open && window.lucide && window.lucide.createIcons) {
+      window.lucide.createIcons();
+    }
+  }
+
+  function openShopPicker(mode) {
+    setOthersOpen(false);
+    fabMode.value = mode;
+    fabTitle.textContent =
+      (FAB_LABELS[mode] || "Action") + " — pick a shop";
+    fabMenu.hidden = false;
+    if (window.lucide && window.lucide.createIcons) {
+      window.lucide.createIcons();
+    }
+  }
 
   if (fabs && fabMenu && fabForm) {
     fabs.addEventListener("click", function (e) {
+      var othersToggle = e.target.closest("[data-fab-others-toggle]");
+      if (othersToggle) {
+        e.stopPropagation();
+        fabMenu.hidden = true;
+        setOthersOpen(fabMore && fabMore.hidden);
+        return;
+      }
       var b = e.target.closest("[data-fab]");
       if (!b) return;
-      fabMode.value = b.dataset.fab;
-      fabTitle.textContent =
-        (FAB_LABELS[b.dataset.fab] || "Action") + " — pick a shop";
-      fabMenu.hidden = !fabMenu.hidden;
-      if (window.lucide && window.lucide.createIcons) {
-        window.lucide.createIcons();
-      }
+      openShopPicker(b.dataset.fab);
     });
 
     fabMenu.addEventListener("click", function (e) {
@@ -580,6 +607,7 @@
     });
 
     document.addEventListener("click", function (e) {
+      if (!e.target.closest("[data-fab-others]")) setOthersOpen(false);
       if (fabMenu.hidden) return;
       if (!e.target.closest("#allFabMenu") &&
           !e.target.closest("[data-all-fabs]")) {

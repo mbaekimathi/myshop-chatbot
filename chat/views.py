@@ -406,7 +406,11 @@ def pick_shop(request):
     request.session.pop("chatbot_all_shops", None)
     login_shop(request, shop)
     fab = (request.POST.get("fab") or "").strip()
-    if fab in {"sale", "stockin", "transfer", "trade", "expense"}:
+    if fab == "receipts":
+        return redirect("chat:receipts")
+    if fab in {
+        "sale", "stockin", "transfer", "trade", "trade_in", "trade_out", "expense"
+    }:
         return redirect(f"{reverse('chat:app')}?fab={fab}")
     return redirect("chat:app")
 
@@ -520,6 +524,34 @@ def app_view(request):
         "expense_categories": stock_ops.EXPENSE_CATEGORIES,
     }
     return render(request, "chat/app.html", context)
+
+
+@shop_required
+def receipts_view(request):
+    """Shop receipts browser — confirm, cancel, and return."""
+    me = request.chat_shop
+    return render(
+        request,
+        "chat/receipts.html",
+        {
+            "company_name": _company_name(),
+            "me": {
+                "id": me.pk,
+                "name": me.name,
+                "location": me.location,
+                "code": me.login_code,
+                "initials": services.initials(me.name),
+                "tone": services.avatar_tone(me.pk),
+                "staff_view": current_employee(request) is not None,
+            },
+            "list_url": reverse("chat:api_receipts_list"),
+            "detail_base": reverse("chat:api_receipt_detail", args=[0]),
+            "confirm_url": reverse("chat:api_receipts_confirm"),
+            "cancel_url": reverse("chat:api_receipts_cancel"),
+            "return_url": reverse("chat:api_receipts_return"),
+            "chat_url": reverse("chat:app"),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -913,6 +945,90 @@ def api_receipt_items(request, receipt_id):
             "items": items,
         }
     )
+
+
+@api_shop_required
+@require_GET
+def api_receipts_list(request):
+    """Filtered receipt list for the Receipts page."""
+    me = request.chat_shop
+    try:
+        rows = stock_ops.list_receipts(
+            me,
+            mode=request.GET.get("mode") or "day",
+            day=request.GET.get("day") or "",
+            date_from=request.GET.get("from") or "",
+            date_to=request.GET.get("to") or "",
+            month=request.GET.get("month") or "",
+            year=request.GET.get("year") or "",
+            status=request.GET.get("status") or "",
+            kind=request.GET.get("kind") or "",
+            query=request.GET.get("q") or "",
+        )
+    except stock_ops.StockError as exc:
+        return _err(str(exc))
+    return JsonResponse({"ok": True, "receipts": rows})
+
+
+@api_shop_required
+@require_GET
+def api_receipt_detail(request, receipt_id):
+    """Full receipt detail for the Receipts page panel."""
+    me = request.chat_shop
+    try:
+        detail = stock_ops.receipt_detail(me, receipt_id)
+    except stock_ops.StockError as exc:
+        return _err(str(exc), 404)
+    return JsonResponse({"ok": True, "receipt": detail})
+
+
+@api_shop_required
+@require_POST
+def api_receipts_confirm(request):
+    me = request.chat_shop
+    data = _json_body(request)
+    try:
+        result = stock_ops.confirm_receipts_bulk(
+            me,
+            data.get("ids") or [],
+            staff_code=data.get("staff_code") or "",
+        )
+    except stock_ops.StockError as exc:
+        return _err(str(exc))
+    return JsonResponse(result)
+
+
+@api_shop_required
+@require_POST
+def api_receipts_cancel(request):
+    me = request.chat_shop
+    data = _json_body(request)
+    try:
+        result = stock_ops.cancel_receipts_bulk(
+            me,
+            data.get("ids") or [],
+            staff_code=data.get("staff_code") or "",
+        )
+    except stock_ops.StockError as exc:
+        return _err(str(exc))
+    return JsonResponse(result)
+
+
+@api_shop_required
+@require_POST
+def api_receipts_return(request):
+    me = request.chat_shop
+    data = _json_body(request)
+    try:
+        result = stock_ops.return_receipts_bulk(
+            me,
+            data.get("receipts") or [],
+            reason=data.get("reason") or "",
+            staff_code=data.get("staff_code") or "",
+        )
+    except stock_ops.StockError as exc:
+        return _err(str(exc))
+    return JsonResponse(result)
 
 
 @api_shop_required
@@ -1574,11 +1690,9 @@ def api_expense(request):
     ).strip():
         return _post_pending(request, me, "expense", data)
     try:
-        expense = stock_ops.create_expense(
+        expenses = stock_ops.create_expenses(
             me,
-            category=data.get("category") or "",
-            name=data.get("name") or "",
-            amount=data.get("amount"),
+            payload=data,
             payment_status=data.get("payment_status") or "",
             supplier_name=data.get("supplier_name") or "",
             supplier_phone=data.get("supplier_phone") or "",
@@ -1588,19 +1702,29 @@ def api_expense(request):
     except stock_ops.StockError as exc:
         return _err(str(exc))
 
+    from decimal import Decimal
+
+    total = sum((e.amount for e in expenses), Decimal("0.00"))
+    first = expenses[0]
     convo = services.get_or_create_bot(me)
-    body = (
-        f"Expense {expense.name} — KSh {expense.amount:,.2f}"
-        f" · {expense.payment_status} — {expense.supplier_name}"
-    )
-    card = stock_ops.expense_card(expense, me)
+    if len(expenses) == 1:
+        body = (
+            f"Expense {first.name} — KSh {first.amount:,.2f}"
+            f" · {first.payment_status} — {first.supplier_name}"
+        )
+    else:
+        body = (
+            f"{len(expenses)} expenses — KSh {total:,.2f}"
+            f" · {first.payment_status} — {first.supplier_name}"
+        )
+    card = stock_ops.expense_card(expenses, me)
     msg = services.post_bot_reply(convo, body, card)
     me_part, _ = _participants(convo, me)
     if me_part:
         services.mark_read(me_part, msg.pk)
     _activity_post(
         "expense", me, body, card,
-        by=stock_ops.employee_label(expense.created_by_id),
+        by=stock_ops.employee_label(first.created_by_id),
     )
     return JsonResponse(
         {

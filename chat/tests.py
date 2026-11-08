@@ -510,7 +510,7 @@ class PendingConfirmTests(ChatTestCase):
         self.assertNotIn("pending", data)
         receipt = ShopReceipt.objects.get()
         self.assertEqual(receipt.created_by_id, 1)
-        self.assertEqual(receipt.status, "confirmed")
+        self.assertEqual(receipt.status, "active")
         self.stock.refresh_from_db()
         self.assertEqual(self.stock.quantity, Decimal("8"))
 
@@ -1528,12 +1528,17 @@ class TradeTests(ChatTestCase):
 
     def test_trade_fab_hidden_when_disabled(self):
         resp = self.client.get(reverse("chat:app"))
-        self.assertContains(resp, 'data-fab="trade"')
+        self.assertContains(resp, "data-fab-others-toggle")
+        self.assertContains(resp, 'data-fab="trade_out"')
+        self.assertContains(resp, 'data-fab="trade_in"')
         CompanyPosSettings.objects.create(
             id=1, enable_trade_out=False, enable_trade_in=False
         )
         resp = self.client.get(reverse("chat:app"))
-        self.assertNotContains(resp, 'data-fab="trade"')
+        self.assertContains(resp, "data-fab-others-toggle")
+        self.assertContains(resp, 'data-fab="transfer"')
+        self.assertNotContains(resp, 'data-fab="trade_out"')
+        self.assertNotContains(resp, 'data-fab="trade_in"')
 
     def test_nonmember_trade_posts_pending_card(self):
         """Staff not allocated to the shop send trades for confirmation —
@@ -1625,6 +1630,41 @@ class ExpenseTests(ChatTestCase):
         supplier = ExpenseSupplier.objects.get()
         self.assertEqual(supplier.name, "SHELL STATION")
         self.assertEqual(expense.supplier_id, supplier.pk)
+
+    def test_multi_line_expense_cart(self):
+        """Multiple parked lines share one supplier + payment status."""
+        data = self.post_expense(
+            {
+                "lines": [
+                    {
+                        "category": "rent",
+                        "name": "Meru pork",
+                        "amount": "10000",
+                    },
+                    {
+                        "category": "utilities",
+                        "name": "Power",
+                        "amount": "2500",
+                    },
+                ],
+                "payment_status": "paid",
+                "supplier_name": "Landlord",
+                "supplier_phone": "0712 345 678",
+                "staff_code": "654321",
+            }
+        ).json()
+        self.assertTrue(data["ok"])
+        rows = list(Expense.objects.order_by("id"))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].name, "MERU PORK")
+        self.assertEqual(rows[0].amount, Decimal("10000.00"))
+        self.assertEqual(rows[1].name, "POWER")
+        self.assertEqual(rows[1].amount, Decimal("2500.00"))
+        self.assertEqual(rows[0].supplier_name, rows[1].supplier_name)
+        card = data["message"]["meta"]["expense"]
+        self.assertEqual(len(card["items"]), 2)
+        self.assertEqual(card["amount"], "12,500.00")
+        self.assertIn("2 expenses", data["message"]["body"])
 
     def test_unpaid_expense_leaves_amount_paid_zero(self):
         data = self.post_expense(
@@ -1931,3 +1971,185 @@ class ActivityFeedTests(ChatTestCase):
         feed = self.feed("expense")
         self.assertNotEqual(feed.pk, user_group.pk)
         self.assertEqual(user_group.messages.count(), 1)  # system msg only
+
+class ReceiptsPageTests(ChatTestCase):
+    """Receipts page: pending sales, list filters, confirm / cancel / return."""
+
+    EMPLOYEE_DDL = PendingConfirmTests.EMPLOYEE_DDL
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import User
+
+        with connection.cursor() as cur:
+            for ddl in self.EMPLOYEE_DDL:
+                cur.execute(ddl)
+            cur.execute("DELETE FROM employees_employeeprofile")
+            cur.execute(
+                "DELETE FROM employees_employeeprofile_assigned_shops"
+            )
+        member_user = User.objects.create_user(
+            username="rcpt_member", first_name="Member", last_name="One"
+        )
+        with connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [2, "654321", member_user.pk, "shop_attendant", "active"],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile_assigned_shops "
+                "(employeeprofile_id, shop_id) VALUES (%s, %s)",
+                [2, self.shop_a.pk],
+            )
+        self.item = Item.objects.create(
+            category="Grocery", name="Sugar 1kg",
+            minimum_selling_price=Decimal("100"),
+            shop_price=Decimal("150"), stock=Decimal("40"),
+            low_stock_notify=False, low_stock_threshold=0,
+            is_suspended=False,
+        )
+        self.stock = ShopStock.objects.create(
+            shop_id=self.shop_a.pk, item_id=self.item.pk,
+            quantity=Decimal("10"), low_stock_threshold=5,
+            average_cost=Decimal("80"),
+        )
+        self.login()
+
+    def make_sale(self, qty="2"):
+        resp = self.client.post(
+            reverse("chat:api_sale"),
+            data=json.dumps({
+                "kind": "sale",
+                "payment_method": "cash",
+                "staff_code": "654321",
+                "lines": [
+                    {"item_id": self.item.pk, "quantity": qty, "serials": []}
+                ],
+            }),
+            content_type="application/json",
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"], data)
+        return ShopReceipt.objects.order_by("-id").first()
+
+    def test_page_requires_login(self):
+        self.client.logout()
+        resp = self.client.get(reverse("chat:receipts"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("/login/", resp["Location"])
+
+    def test_page_renders_when_logged_in(self):
+        resp = self.client.get(reverse("chat:receipts"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "data-rcpt-app")
+        self.assertContains(resp, "Receipts")
+
+    def test_sale_is_pending_and_confirmable(self):
+        receipt = self.make_sale()
+        self.assertEqual(receipt.status, "active")
+        self.stock.refresh_from_db()
+        self.assertEqual(self.stock.quantity, Decimal("8"))
+
+        resp = self.client.post(
+            reverse("chat:api_receipts_confirm"),
+            data=json.dumps({"ids": [receipt.pk], "staff_code": "654321"}),
+            content_type="application/json",
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"], data)
+        receipt.refresh_from_db()
+        self.assertEqual(receipt.status, "confirmed")
+
+    def test_confirm_rejects_non_pending(self):
+        receipt = self.make_sale()
+        receipt.status = "confirmed"
+        receipt.save(update_fields=["status"])
+        resp = self.client.post(
+            reverse("chat:api_receipts_confirm"),
+            data=json.dumps({"ids": [receipt.pk], "staff_code": "654321"}),
+            content_type="application/json",
+        )
+        self.assertFalse(resp.json()["ok"])
+
+    def test_cancel_pending_restocks(self):
+        receipt = self.make_sale("3")
+        self.stock.refresh_from_db()
+        self.assertEqual(self.stock.quantity, Decimal("7"))
+        resp = self.client.post(
+            reverse("chat:api_receipts_cancel"),
+            data=json.dumps({"ids": [receipt.pk], "staff_code": "654321"}),
+            content_type="application/json",
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"], data)
+        receipt.refresh_from_db()
+        self.assertEqual(receipt.status, "cancelled")
+        self.stock.refresh_from_db()
+        self.assertEqual(self.stock.quantity, Decimal("10"))
+
+    def test_partial_return(self):
+        receipt = self.make_sale("4")
+        line = ShopReceiptLine.objects.get(receipt_id=receipt.pk)
+        resp = self.client.post(
+            reverse("chat:api_receipts_return"),
+            data=json.dumps({
+                "staff_code": "654321",
+                "reason": "Damaged item",
+                "receipts": [{
+                    "id": receipt.pk,
+                    "lines": [{"line_id": line.pk, "quantity": "1"}],
+                }],
+            }),
+            content_type="application/json",
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"], data)
+        receipt.refresh_from_db()
+        self.assertEqual(receipt.status, "partial_return")
+        line.refresh_from_db()
+        self.assertEqual(line.returned_quantity, Decimal("1.000"))
+        self.stock.refresh_from_db()
+        self.assertEqual(self.stock.quantity, Decimal("7"))  # sold 4, returned 1
+
+    def test_list_filters_by_status_and_day(self):
+        receipt = self.make_sale()
+        day = timezone.localdate().isoformat()
+        resp = self.client.get(
+            reverse("chat:api_receipts_list"),
+            {"mode": "day", "day": day, "status": "pending", "kind": "sale"},
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        ids = [r["id"] for r in data["receipts"]]
+        self.assertIn(receipt.pk, ids)
+        self.assertTrue(
+            all(r["status"] == "active" for r in data["receipts"])
+        )
+
+        resp = self.client.get(
+            reverse("chat:api_receipts_list"),
+            {"mode": "day", "day": day, "status": "confirmed", "kind": "sale"},
+        )
+        ids = [r["id"] for r in resp.json()["receipts"]]
+        self.assertNotIn(receipt.pk, ids)
+
+    def test_detail_endpoint(self):
+        receipt = self.make_sale()
+        resp = self.client.get(
+            reverse("chat:api_receipt_detail", args=[receipt.pk])
+        )
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["receipt"]["receipt_number"], receipt.receipt_number)
+        self.assertTrue(data["receipt"]["lines"])
+        self.assertTrue(data["receipt"]["can_confirm"])
+
+    def test_app_has_receipts_fab(self):
+        resp = self.client.get(reverse("chat:app"))
+        self.assertContains(resp, 'data-fab="receipts"')
+        self.assertContains(resp, "data-lucide=\"receipt\"")
+        self.assertContains(resp, 'data-fab="stockin"')
+        self.assertContains(resp, 'data-fab="expense"')
+        self.assertContains(resp, "data-fab-others-toggle")

@@ -1140,7 +1140,9 @@ def create_sale(me, raw_lines, *, payment_method, cash_amount=None,
         mpesa_amount=mpesa,
         credit_due_date=credit_due_date if kind == "credit" else None,
         share_whatsapp=share_whatsapp,
-        status="confirmed",
+        # Cash sales stay pending until confirmed on the Receipts page;
+        # credits / quotations are recorded as confirmed immediately.
+        status="active" if kind == "sale" else "confirmed",
     )
     for line in lines:
         item = line["item"]
@@ -1251,6 +1253,895 @@ def quotation_whatsapp_url(receipt, lines, *, share_whatsapp: bool) -> str:
     number = dial.lstrip("+") + national if national else ""
     text = quote(_quotation_text(receipt, lines))
     return f"https://wa.me/{number}?text={text}"
+
+
+# ---------------------------------------------------------------------------
+# Receipts page — list / detail / confirm / cancel / return
+# Mirrors MY-SHOP shops.services confirm_shop_receipt, cancel_pending_*,
+# return_shop_receipt_items (without importing MY-SHOP).
+# ---------------------------------------------------------------------------
+
+STATUS_ACTIVE = "active"
+STATUS_CONFIRMED = "confirmed"
+STATUS_PARTIAL_RETURN = "partial_return"
+STATUS_CANCELLED = "cancelled"
+
+STATUS_LABELS = {
+    STATUS_ACTIVE: "Pending",
+    STATUS_CONFIRMED: "Confirmed",
+    STATUS_PARTIAL_RETURN: "Partially returned",
+    STATUS_CANCELLED: "Cancelled",
+}
+
+KIND_LABELS = {
+    "sale": "Sale",
+    "credit": "Credit",
+    "quotation": "Quotation",
+    "trade_out": "Trade out",
+    "trade_in": "Trade in",
+}
+
+PAYMENT_LABELS = {
+    "cash": "Cash",
+    "mpesa": "M-Pesa",
+    "both": "Cash + M-Pesa",
+    "credit": "Credit",
+}
+
+ENTRY_CUSTOMER_RETURN = "customer_return"
+
+RETURNABLE_KINDS = ("sale", "credit", "trade_out")
+
+
+def _line_remaining_qty(line) -> Decimal:
+    return max(
+        ZERO_QTY,
+        _quantize_qty(line.quantity) - _quantize_qty(line.returned_quantity),
+    )
+
+
+def _line_remaining_serials(line) -> list:
+    sold = [str(s).strip() for s in (line.serial_numbers or []) if str(s).strip()]
+    returned = {
+        str(s).strip()
+        for s in (line.returned_serial_numbers or [])
+        if str(s).strip()
+    }
+    return [s for s in sold if s not in returned]
+
+
+def _qty_label(value) -> str:
+    q = _quantize_qty(value)
+    if q == q.to_integral_value():
+        return str(int(q))
+    return str(q.normalize())
+
+
+def _parse_period_bounds(*, mode="", day="", date_from="", date_to="", month="", year=""):
+    """Return (start_dt, end_dt) aware datetimes for receipt list filters."""
+    from datetime import date, datetime, time
+
+    mode = (mode or "day").strip().lower()
+    today = timezone.localdate()
+    tz = timezone.get_current_timezone()
+
+    def aware(d, t):
+        return timezone.make_aware(datetime.combine(d, t), tz)
+
+    if mode == "period":
+        try:
+            start = date.fromisoformat((date_from or "").strip())
+        except ValueError:
+            start = today
+        try:
+            end = date.fromisoformat((date_to or "").strip())
+        except ValueError:
+            end = start
+        if end < start:
+            start, end = end, start
+        return aware(start, time.min), aware(end, time.max)
+
+    if mode == "month":
+        raw = (month or "").strip()
+        try:
+            y, m = [int(p) for p in raw.split("-", 1)]
+            start = date(y, m, 1)
+        except (TypeError, ValueError):
+            start = date(today.year, today.month, 1)
+        if start.month == 12:
+            end = date(start.year, 12, 31)
+        else:
+            end = date(start.year, start.month + 1, 1)
+            from datetime import timedelta
+
+            end = end - timedelta(days=1)
+        return aware(start, time.min), aware(end, time.max)
+
+    if mode == "year":
+        try:
+            y = int((year or "").strip() or today.year)
+        except (TypeError, ValueError):
+            y = today.year
+        return aware(date(y, 1, 1), time.min), aware(date(y, 12, 31), time.max)
+
+    # day (default)
+    try:
+        d = date.fromisoformat((day or "").strip())
+    except ValueError:
+        d = today
+    return aware(d, time.min), aware(d, time.max)
+
+
+def _receipt_list_row(receipt) -> dict:
+    created = timezone.localtime(receipt.created_at)
+    status = receipt.status or STATUS_ACTIVE
+    kind = receipt.kind or "sale"
+    can_confirm = kind == "sale" and status == STATUS_ACTIVE
+    can_cancel = kind == "sale" and status == STATUS_ACTIVE
+    can_return = kind in RETURNABLE_KINDS and status != STATUS_CANCELLED
+    return {
+        "id": receipt.pk,
+        "receipt_number": receipt.receipt_number,
+        "kind": kind,
+        "kind_label": KIND_LABELS.get(kind, kind.title()),
+        "status": status,
+        "status_label": STATUS_LABELS.get(status, status.replace("_", " ").title()),
+        "payment_method": receipt.payment_method or "",
+        "payment_label": PAYMENT_LABELS.get(
+            receipt.payment_method or "", (receipt.payment_method or "").title()
+        ),
+        "client_name": receipt.client_name or "",
+        "client_phone": receipt.client_phone or "",
+        "total": str(receipt.total),
+        "amount_paid": str(receipt.amount_paid),
+        "created_at": created.isoformat(),
+        "created_label": created.strftime("%d %b %Y · %H:%M"),
+        "cashier": employee_label(receipt.created_by_id),
+        "can_confirm": can_confirm,
+        "can_cancel": can_cancel,
+        "can_return": can_return,
+    }
+
+
+def _receipt_line_row(line) -> dict:
+    remaining = _line_remaining_qty(line)
+    remaining_serials = _line_remaining_serials(line)
+    return {
+        "id": line.pk,
+        "item_id": line.item_id,
+        "item_name": line.item_name,
+        "quantity": str(_quantize_qty(line.quantity)),
+        "returned_quantity": str(_quantize_qty(line.returned_quantity)),
+        "remaining_quantity": str(remaining),
+        "unit_price": str(line.unit_price),
+        "line_total": str(line.line_total),
+        "remaining_total": str(
+            (_money(line.unit_price) * remaining).quantize(Decimal("0.01"))
+        ),
+        "serial_numbers": list(line.serial_numbers or []),
+        "returned_serial_numbers": list(line.returned_serial_numbers or []),
+        "remaining_serial_numbers": remaining_serials,
+        "track_serial": bool(line.serial_numbers or remaining_serials),
+    }
+
+
+def list_receipts(
+    shop,
+    *,
+    mode="day",
+    day="",
+    date_from="",
+    date_to="",
+    month="",
+    year="",
+    status="",
+    kind="",
+    query="",
+    limit=200,
+) -> list:
+    """Shop-scoped POS receipts for the Receipts page."""
+    start_dt, end_dt = _parse_period_bounds(
+        mode=mode,
+        day=day,
+        date_from=date_from,
+        date_to=date_to,
+        month=month,
+        year=year,
+    )
+    try:
+        limit_n = max(1, min(int(limit or 200), 500))
+    except (TypeError, ValueError):
+        limit_n = 200
+
+    qs = ShopReceipt.objects.filter(
+        shop_id=shop.pk,
+        created_at__gte=start_dt,
+        created_at__lte=end_dt,
+    ).order_by("-created_at", "-id")
+
+    status_key = (status or "").strip().lower()
+    if status_key in ("pending", "active"):
+        qs = qs.filter(status=STATUS_ACTIVE)
+    elif status_key == "confirmed":
+        qs = qs.filter(status__in=(STATUS_CONFIRMED, STATUS_PARTIAL_RETURN))
+    elif status_key == "cancelled":
+        qs = qs.filter(status=STATUS_CANCELLED)
+    elif status_key in ("partial_return", "partial"):
+        qs = qs.filter(status=STATUS_PARTIAL_RETURN)
+
+    kind_key = (kind or "").strip().lower()
+    if kind_key in ("sale", "credit", "quotation", "trade_out", "trade_in"):
+        qs = qs.filter(kind=kind_key)
+    elif kind_key in ("sales_credits", "sale_credit"):
+        qs = qs.filter(kind__in=("sale", "credit"))
+
+    q = (query or "").strip()
+    if q:
+        qs = qs.filter(
+            Q(receipt_number__icontains=q)
+            | Q(client_name__icontains=q)
+            | Q(client_phone__icontains=q)
+        )
+
+    return [_receipt_list_row(r) for r in qs[:limit_n]]
+
+
+def receipt_detail(shop, receipt_id: int) -> dict:
+    receipt = ShopReceipt.objects.filter(pk=receipt_id, shop_id=shop.pk).first()
+    if receipt is None:
+        raise StockError("Receipt not found for this shop.")
+    lines = list(
+        ShopReceiptLine.objects.filter(receipt_id=receipt.pk).order_by("id")
+    )
+    line_rows = [_receipt_line_row(line) for line in lines]
+    returnable = []
+    if (
+        receipt.kind in RETURNABLE_KINDS
+        and receipt.status != STATUS_CANCELLED
+    ):
+        for line, payload in zip(lines, line_rows):
+            if _line_remaining_qty(line) <= 0:
+                continue
+            if line.serial_numbers and not payload["remaining_serial_numbers"]:
+                continue
+            returnable.append(payload)
+    row = _receipt_list_row(receipt)
+    return {
+        **row,
+        "subtotal": str(receipt.subtotal),
+        "tax_percent": str(receipt.tax_percent),
+        "tax_amount": str(receipt.tax_amount),
+        "cash_amount": str(receipt.cash_amount),
+        "mpesa_amount": str(receipt.mpesa_amount),
+        "lines": line_rows,
+        "returnable_lines": returnable,
+    }
+
+
+@transaction.atomic
+def confirm_receipt(shop, receipt_id: int, *, staff_code="") -> dict:
+    employee_id = verify_employee_code(
+        staff_code, shop, require_member=True
+    )
+    receipt = (
+        ShopReceipt.objects.select_for_update()
+        .filter(pk=receipt_id, shop_id=shop.pk)
+        .first()
+    )
+    if receipt is None:
+        raise StockError("Receipt not found for this shop.")
+    if receipt.kind != "sale":
+        raise StockError("Only sales receipts can be confirmed.")
+    if receipt.status != STATUS_ACTIVE:
+        raise StockError("Only pending receipts can be confirmed.")
+    receipt.status = STATUS_CONFIRMED
+    receipt.save(update_fields=["status"])
+    return {
+        "ok": True,
+        "message": f"Receipt {receipt.receipt_number} confirmed.",
+        "receipt": receipt_detail(shop, receipt.pk),
+        "by": employee_label(employee_id),
+    }
+
+
+def _append_return_batch(line, *, qty, serials, at, by_id, reason="") -> None:
+    batches = [
+        b for b in (line.return_batches or []) if isinstance(b, dict)
+    ]
+    batch = {
+        "qty": float(_quantize_qty(qty)),
+        "at": at.isoformat(),
+        "by_id": by_id,
+        "serials": [str(s).strip() for s in (serials or []) if str(s).strip()],
+    }
+    reason_text = (reason or "").strip()
+    if reason_text:
+        batch["reason"] = reason_text
+    batches.append(batch)
+    line.return_batches = batches
+
+
+def _append_return_payment_event(receipt, *, at, cash, mpesa, by_id) -> bool:
+    cash = _money(cash)
+    mpesa = _money(mpesa)
+    if cash <= 0 and mpesa <= 0:
+        return False
+    events = [
+        e for e in (receipt.return_payment_events or []) if isinstance(e, dict)
+    ]
+    events.append(
+        {
+            "at": at.isoformat(),
+            "cash": str(cash),
+            "mpesa": str(mpesa),
+            "by_id": by_id,
+        }
+    )
+    receipt.return_payment_events = events
+    return True
+
+
+def _create_return_stock_movement(
+    *, shop, receipt, employee_id, occurred_at, lines, reason=""
+):
+    prepared = [
+        row
+        for row in lines
+        if row.get("item") is not None and _quantize_qty(row.get("qty")) > 0
+    ]
+    if not prepared:
+        return None
+    reason_text = (reason or "").strip()
+    notes = f"Customer return on {receipt.receipt_number}"
+    if reason_text:
+        notes = f"{notes}: {reason_text}"
+    movement = StockMovement.objects.create(
+        movement_type=MOVEMENT_IN,
+        entry_source=ENTRY_CUSTOMER_RETURN,
+        shop_id=shop.pk,
+        created_by_id=employee_id,
+        notes=notes,
+        supplier_notified=True,
+    )
+    StockMovement.objects.filter(pk=movement.pk).update(created_at=occurred_at)
+    for row in prepared:
+        item = row["item"]
+        qty = _quantize_qty(row["qty"])
+        unit_cost = _money(row.get("unit_cost"))
+        serials = [
+            str(s).strip()
+            for s in (row.get("serial_numbers") or [])
+            if str(s).strip()
+        ]
+        line_note = f"Return on {receipt.receipt_number}"
+        if reason_text:
+            line_note = f"{line_note}: {reason_text}"
+        StockMovementLine.objects.create(
+            movement_id=movement.pk,
+            item_id=item.pk,
+            item_name=item.name,
+            quantity=qty,
+            buying_price=unit_cost,
+            unit_cost=unit_cost,
+            note=line_note,
+            serial_numbers=serials,
+        )
+    return movement
+
+
+@transaction.atomic
+def return_receipt_items(
+    shop, receipt_id: int, *, lines_payload, reason="", staff_code="", employee_id=None
+) -> dict:
+    """Partial or full return of sale/credit/trade_out lines. Restocks inventory."""
+    if employee_id is None:
+        employee_id = verify_employee_code(
+            staff_code, shop, require_member=True
+        )
+    reason = (reason or "").strip()
+    if not reason:
+        raise StockError("Enter a reason for the return.")
+    if len(reason) > 500:
+        raise StockError("Return reason must be 500 characters or fewer.")
+
+    receipt = (
+        ShopReceipt.objects.select_for_update()
+        .filter(pk=receipt_id, shop_id=shop.pk)
+        .first()
+    )
+    if receipt is None:
+        raise StockError("Receipt not found for this shop.")
+    if receipt.kind == "quotation":
+        raise StockError("Quotations cannot be returned.")
+    if receipt.kind == "trade_in":
+        raise StockError("Trade-in returns are not supported here.")
+    if receipt.status == STATUS_CANCELLED:
+        raise StockError("This receipt is already fully returned.")
+
+    raw_lines = lines_payload or []
+    if not isinstance(raw_lines, list) or not raw_lines:
+        raise StockError("Select at least one item to return.")
+
+    lines_by_id = {
+        line.pk: line
+        for line in ShopReceiptLine.objects.select_for_update().filter(
+            receipt_id=receipt.pk
+        )
+    }
+    prepared = []
+    item_ids = set()
+
+    for raw in raw_lines:
+        try:
+            line_id = int(raw.get("line_id") or raw.get("id") or 0)
+        except (TypeError, ValueError):
+            line_id = 0
+        qty = _quantize_qty(raw.get("quantity") or raw.get("qty") or 0)
+        serials = [
+            str(s).strip()
+            for s in (raw.get("serials") or raw.get("serial_numbers") or [])
+            if str(s).strip()
+        ]
+        if serials and qty <= 0:
+            qty = _quantize_qty(len(serials))
+        elif serials and qty != _quantize_qty(len(serials)):
+            raise StockError("Serial-tracked returns need one serial per unit.")
+        if line_id <= 0 or qty <= 0:
+            raise StockError("Each return line needs a valid item and quantity.")
+        line = lines_by_id.get(line_id)
+        if line is None:
+            raise StockError(f"Receipt line #{line_id} was not found.")
+        remaining = _line_remaining_qty(line)
+        if qty > remaining:
+            raise StockError(
+                f"“{line.item_name}”: only {_qty_label(remaining)} unit(s) left to return."
+            )
+        remaining_serials = _line_remaining_serials(line)
+        if remaining_serials:
+            if not serials:
+                raise StockError(
+                    f"“{line.item_name}” requires serial numbers to return."
+                )
+            if len(serials) != int(qty) and _quantize_qty(len(serials)) != qty:
+                raise StockError(
+                    f"“{line.item_name}”: return quantity must match serial count."
+                )
+            missing = [s for s in serials if s not in remaining_serials]
+            if missing:
+                raise StockError(
+                    f"“{line.item_name}”: serial not on this receipt ({', '.join(missing[:5])})."
+                )
+        else:
+            serials = []
+
+        serial_objects = {}
+        if serials:
+            if not line.item_id:
+                raise StockError(
+                    f"“{line.item_name}”: cannot verify serial numbers for this line."
+                )
+            found = {
+                row.serial_number: row
+                for row in ItemSerial.objects.select_for_update().filter(
+                    item_id=line.item_id,
+                    serial_number__in=serials,
+                )
+            }
+            not_in_system = [s for s in serials if s not in found]
+            if not_in_system:
+                raise StockError(
+                    f"“{line.item_name}”: serial not in the system "
+                    f"({', '.join(not_in_system[:5])})."
+                )
+            already = [s for s in serials if found[s].is_available]
+            if already:
+                raise StockError(
+                    f"“{line.item_name}”: serial already in stock "
+                    f"({', '.join(already[:5])}). Cannot return."
+                )
+            serial_objects = found
+
+        if line.item_id:
+            item_ids.add(line.item_id)
+        prepared.append(
+            {
+                "line": line,
+                "qty": qty,
+                "serial_numbers": serials,
+                "serial_objects": serial_objects,
+            }
+        )
+
+    if not prepared:
+        raise StockError("Select at least one valid item to return.")
+
+    items_by_id = {
+        i.pk: i
+        for i in Item.objects.select_for_update().filter(pk__in=item_ids)
+    }
+    stock_by_item = {
+        row.item_id: row
+        for row in ShopStock.objects.select_for_update().filter(
+            shop_id=shop.pk, item_id__in=item_ids
+        )
+    }
+    missing_stock = [iid for iid in item_ids if iid not in stock_by_item]
+    for iid in missing_stock:
+        stock_by_item[iid] = ShopStock.objects.create(
+            shop_id=shop.pk, item_id=iid, quantity=ZERO_QTY, average_cost=Decimal("0")
+        )
+
+    now = timezone.now()
+    movement_lines = []
+
+    for row in prepared:
+        line = row["line"]
+        qty = row["qty"]
+        serials = row["serial_numbers"]
+        line.returned_quantity = _quantize_qty(line.returned_quantity) + qty
+        if serials:
+            existing = [
+                str(s).strip()
+                for s in (line.returned_serial_numbers or [])
+                if str(s).strip()
+            ]
+            line.returned_serial_numbers = existing + serials
+        remaining_after = _line_remaining_qty(line)
+        line.line_total = (_money(line.unit_price) * remaining_after).quantize(
+            Decimal("0.01")
+        )
+        _append_return_batch(
+            line,
+            qty=qty,
+            serials=serials,
+            at=now,
+            by_id=employee_id,
+            reason=reason,
+        )
+        line.save(
+            update_fields=[
+                "returned_quantity",
+                "returned_serial_numbers",
+                "return_batches",
+                "line_total",
+            ]
+        )
+
+        item = items_by_id.get(line.item_id) if line.item_id else None
+        if item is None:
+            continue
+        stock = stock_by_item.get(item.pk)
+        if stock is None:
+            continue
+        return_unit_cost = _money(line.unit_cost)
+        stock.average_cost = weighted_average_cost(
+            old_qty=stock.quantity,
+            old_avg=stock.average_cost,
+            in_qty=qty,
+            in_price=return_unit_cost,
+        )
+        stock.quantity = _quantize_qty(stock.quantity) + qty
+        stock.save(update_fields=["quantity", "average_cost", "updated_at"])
+        item.stock = _quantize_qty(item.stock) + qty
+        item.save(update_fields=["stock"])
+        movement_lines.append(
+            {
+                "item": item,
+                "qty": qty,
+                "unit_cost": return_unit_cost,
+                "serial_numbers": serials,
+            }
+        )
+        if serials:
+            for serial_no in serials:
+                obj = row["serial_objects"].get(serial_no)
+                if obj is None:
+                    continue
+                obj.is_available = True
+                obj.shop_id = shop.pk
+                obj.save(update_fields=["is_available", "shop_id", "updated_at"])
+
+    _create_return_stock_movement(
+        shop=shop,
+        receipt=receipt,
+        employee_id=employee_id,
+        occurred_at=now,
+        lines=movement_lines,
+        reason=reason,
+    )
+
+    all_lines = list(
+        ShopReceiptLine.objects.filter(receipt_id=receipt.pk).order_by("id")
+    )
+    remaining_subtotal = sum(
+        (
+            (_money(line.unit_price) * _line_remaining_qty(line)).quantize(
+                Decimal("0.01")
+            )
+            for line in all_lines
+        ),
+        Decimal("0.00"),
+    )
+    tax_percent = _money(receipt.tax_percent)
+    prior_cash = _money(receipt.cash_amount)
+    prior_mpesa = _money(receipt.mpesa_amount)
+
+    if remaining_subtotal <= 0:
+        tax_amount = Decimal("0.00")
+        total = Decimal("0.00")
+        cash_amount = Decimal("0.00")
+        mpesa_amount = Decimal("0.00")
+        status = STATUS_CANCELLED
+    else:
+        tax_amount = (remaining_subtotal * tax_percent / Decimal("100")).quantize(
+            Decimal("0.01")
+        )
+        total = (remaining_subtotal + tax_amount).quantize(Decimal("0.01"))
+        any_returned = any(
+            _quantize_qty(line.returned_quantity) > 0 for line in all_lines
+        )
+        if any_returned:
+            status = STATUS_PARTIAL_RETURN
+        elif receipt.status == STATUS_CONFIRMED:
+            status = STATUS_CONFIRMED
+        else:
+            status = STATUS_ACTIVE
+        cash_amount = receipt.cash_amount
+        mpesa_amount = receipt.mpesa_amount
+        if receipt.kind == "sale":
+            method = receipt.payment_method or "cash"
+            if method == "cash":
+                cash_amount = total
+                mpesa_amount = Decimal("0.00")
+            elif method == "mpesa":
+                mpesa_amount = total
+                cash_amount = Decimal("0.00")
+            elif method == "both":
+                old_total = _money(receipt.total)
+                if old_total > 0:
+                    ratio = total / old_total
+                    cash_amount = (_money(receipt.cash_amount) * ratio).quantize(
+                        Decimal("0.01")
+                    )
+                    mpesa_amount = (total - cash_amount).quantize(Decimal("0.01"))
+                else:
+                    cash_amount = Decimal("0.00")
+                    mpesa_amount = total
+            else:
+                cash_amount = Decimal("0.00")
+                mpesa_amount = Decimal("0.00")
+        elif receipt.kind not in ("credit", "trade_out"):
+            cash_amount = Decimal("0.00")
+            mpesa_amount = Decimal("0.00")
+
+    receipt.subtotal = remaining_subtotal
+    receipt.tax_amount = tax_amount
+    receipt.total = total
+    receipt.cash_amount = cash_amount
+    receipt.mpesa_amount = mpesa_amount
+    receipt.status = status
+    receipt.last_returned_at = now
+    receipt.last_returned_by_id = employee_id
+    update_fields = [
+        "subtotal",
+        "tax_amount",
+        "total",
+        "cash_amount",
+        "mpesa_amount",
+        "status",
+        "last_returned_at",
+        "last_returned_by_id",
+    ]
+    if receipt.kind == "sale" and _append_return_payment_event(
+        receipt,
+        at=now,
+        cash=prior_cash - _money(cash_amount),
+        mpesa=prior_mpesa - _money(mpesa_amount),
+        by_id=employee_id,
+    ):
+        update_fields.append("return_payment_events")
+    paid = _money(receipt.amount_paid)
+    if paid > total:
+        receipt.amount_paid = total
+        update_fields.append("amount_paid")
+    receipt.save(update_fields=update_fields)
+
+    returned_units = _qty_label(
+        sum((row["qty"] for row in prepared), Decimal("0"))
+    )
+    if status == STATUS_CANCELLED:
+        summary = (
+            f"Receipt {receipt.receipt_number} fully returned and cancelled "
+            f"({returned_units} unit(s) restocked)."
+        )
+    else:
+        summary = (
+            f"Returned {returned_units} unit(s) on {receipt.receipt_number}. "
+            f"Remaining total KSh {total}."
+        )
+    return {
+        "ok": True,
+        "message": summary,
+        "receipt": receipt_detail(shop, receipt.pk),
+        "by": employee_label(employee_id),
+    }
+
+
+@transaction.atomic
+def cancel_pending_receipt(
+    shop, receipt_id: int, *, staff_code="", employee_id=None
+) -> dict:
+    if employee_id is None:
+        employee_id = verify_employee_code(
+            staff_code, shop, require_member=True
+        )
+    receipt = (
+        ShopReceipt.objects.select_for_update()
+        .filter(pk=receipt_id, shop_id=shop.pk)
+        .first()
+    )
+    if receipt is None:
+        raise StockError("Receipt not found for this shop.")
+    if receipt.kind != "sale":
+        raise StockError("Only sales receipts can be cancelled here.")
+    if receipt.status != STATUS_ACTIVE:
+        raise StockError("Only pending receipts can be cancelled here.")
+
+    lines_payload = []
+    for line in ShopReceiptLine.objects.filter(receipt_id=receipt.pk):
+        remaining = _line_remaining_qty(line)
+        if remaining <= 0:
+            continue
+        serials = list(_line_remaining_serials(line))
+        entry = {"line_id": line.pk, "quantity": str(remaining)}
+        if serials:
+            entry["serial_numbers"] = serials
+        lines_payload.append(entry)
+
+    if not lines_payload:
+        now = timezone.now()
+        receipt.status = STATUS_CANCELLED
+        receipt.last_returned_at = now
+        receipt.last_returned_by_id = employee_id
+        receipt.save(
+            update_fields=["status", "last_returned_at", "last_returned_by_id"]
+        )
+        return {
+            "ok": True,
+            "message": f"Receipt {receipt.receipt_number} cancelled.",
+            "receipt": receipt_detail(shop, receipt.pk),
+            "by": employee_label(employee_id),
+        }
+
+    receipt_pk = receipt.pk
+    number = receipt.receipt_number
+    del receipt
+    out = return_receipt_items(
+        shop,
+        receipt_pk,
+        lines_payload=lines_payload,
+        reason="Receipt cancelled",
+        employee_id=employee_id,
+    )
+    out["message"] = f"Receipt {number} cancelled."
+    return out
+
+
+@transaction.atomic
+def confirm_receipts_bulk(shop, ids, *, staff_code="") -> dict:
+    employee_id = verify_employee_code(
+        staff_code, shop, require_member=True
+    )
+    results = []
+    errors = []
+    for rid in ids or []:
+        try:
+            rid_i = int(rid)
+        except (TypeError, ValueError):
+            errors.append(f"Invalid receipt id: {rid}")
+            continue
+        receipt = (
+            ShopReceipt.objects.select_for_update()
+            .filter(pk=rid_i, shop_id=shop.pk)
+            .first()
+        )
+        if receipt is None:
+            errors.append(f"Receipt #{rid_i} not found.")
+            continue
+        if receipt.kind != "sale":
+            errors.append(f"{receipt.receipt_number}: only sales can be confirmed.")
+            continue
+        if receipt.status != STATUS_ACTIVE:
+            errors.append(
+                f"{receipt.receipt_number}: only pending can be confirmed."
+            )
+            continue
+        receipt.status = STATUS_CONFIRMED
+        receipt.save(update_fields=["status"])
+        results.append(receipt.receipt_number)
+    if not results and errors:
+        raise StockError(
+            errors[0] if len(errors) == 1 else "; ".join(errors[:3])
+        )
+    return {
+        "ok": True,
+        "message": f"Confirmed {len(results)} receipt(s).",
+        "confirmed": results,
+        "errors": errors,
+        "by": employee_label(employee_id),
+    }
+
+
+def cancel_receipts_bulk(shop, ids, *, staff_code="") -> dict:
+    employee_id = verify_employee_code(
+        staff_code, shop, require_member=True
+    )
+    results = []
+    errors = []
+    for rid in ids or []:
+        try:
+            rid_i = int(rid)
+        except (TypeError, ValueError):
+            errors.append(f"Invalid receipt id: {rid}")
+            continue
+        try:
+            out = cancel_pending_receipt(
+                shop, rid_i, employee_id=employee_id
+            )
+            results.append(
+                (out.get("receipt") or {}).get("receipt_number") or str(rid_i)
+            )
+        except StockError as exc:
+            errors.append(str(exc))
+    if not results and errors:
+        raise StockError(
+            errors[0] if len(errors) == 1 else "; ".join(errors[:3])
+        )
+    return {
+        "ok": True,
+        "message": f"Cancelled {len(results)} receipt(s).",
+        "cancelled": results,
+        "errors": errors,
+        "by": employee_label(employee_id),
+    }
+
+
+def return_receipts_bulk(shop, receipts_payload, *, reason="", staff_code="") -> dict:
+    employee_id = verify_employee_code(
+        staff_code, shop, require_member=True
+    )
+    results = []
+    errors = []
+    for entry in receipts_payload or []:
+        try:
+            rid = int(entry.get("id") or entry.get("receipt_id") or 0)
+        except (TypeError, ValueError):
+            rid = 0
+        if rid <= 0:
+            errors.append("Each return needs a receipt id.")
+            continue
+        try:
+            out = return_receipt_items(
+                shop,
+                rid,
+                lines_payload=entry.get("lines") or [],
+                reason=reason or entry.get("reason") or "",
+                employee_id=employee_id,
+            )
+            results.append(
+                (out.get("receipt") or {}).get("receipt_number") or str(rid)
+            )
+        except StockError as exc:
+            errors.append(str(exc))
+    if not results and errors:
+        raise StockError(errors[0] if len(errors) == 1 else "; ".join(errors[:3]))
+    return {
+        "ok": True,
+        "message": f"Returned items on {len(results)} receipt(s).",
+        "returned": results,
+        "errors": errors,
+        "by": employee_label(employee_id),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1577,24 +2468,65 @@ EXPENSE_CATEGORY_LABELS = dict(EXPENSE_CATEGORIES)
 EXPENSE_STATUSES = ("paid", "partial", "unpaid")
 
 
+def parse_expense_lines(payload) -> list[dict]:
+    """Normalize expense cart lines — mirrors MY-SHOP's _parse_expense_lines.
+
+    Accepts ``lines: [{category, name, amount}, ...]`` or the legacy single
+    ``category`` / ``name`` / ``amount`` fields.
+    """
+    raw = payload.get("lines")
+    if raw is None:
+        raw = [
+            {
+                "category": payload.get("category") or "",
+                "name": payload.get("name") or "",
+                "amount": payload.get("amount"),
+            }
+        ]
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise StockError("Add at least one expense.")
+    lines = []
+    for index, row in enumerate(raw):
+        if not isinstance(row, dict):
+            raise StockError(f"Expense {index + 1}: invalid line.")
+        label = f"Expense {index + 1}"
+        category = (row.get("category") or "").strip().lower()
+        if category not in EXPENSE_CATEGORY_LABELS:
+            raise StockError(f"{label}: choose a category.")
+        name = (row.get("name") or "").strip().upper()
+        if not name:
+            raise StockError(f"{label}: enter the expense name.")
+        if len(name) > 200:
+            raise StockError(f"{label}: name is too long.")
+        amount = _money(row.get("amount"))
+        if amount <= 0:
+            raise StockError(f"{label}: amount must be greater than zero.")
+        lines.append({"category": category, "name": name, "amount": amount})
+    return lines
+
+
 @transaction.atomic
-def create_expense(me, *, category, name, amount, payment_status,
-                   supplier_name, supplier_phone, staff_code="",
-                   require_member=False, employee_id=None):
-    """Returns the created Expense row."""
+def create_expenses(me, *, lines=None, category="", name="", amount=None,
+                    payment_status="", supplier_name="", supplier_phone="",
+                    staff_code="", require_member=False, employee_id=None,
+                    payload=None):
+    """Create one or more Expense rows (shared supplier + payment status).
+
+    Returns the list of created rows. ``payload`` (or ``lines`` / legacy
+    single fields) supplies the cart lines — same shape MY-SHOP posts.
+    """
     if employee_id is None:
         employee_id = verify_employee_code(
             staff_code, me, require_member=require_member
         )
-    category = (category or "").strip().lower()
-    if category not in EXPENSE_CATEGORY_LABELS:
-        raise StockError("Choose an expense category.")
-    name = (name or "").strip().upper()
-    if not name:
-        raise StockError("Enter the expense name.")
-    amount = _money(amount)
-    if amount <= 0:
-        raise StockError("Enter an amount greater than zero.")
+    if payload is not None:
+        parsed = parse_expense_lines(payload)
+    elif lines is not None:
+        parsed = parse_expense_lines({"lines": lines})
+    else:
+        parsed = parse_expense_lines(
+            {"category": category, "name": name, "amount": amount}
+        )
     status = (payment_status or "").strip().lower()
     if status not in EXPENSE_STATUSES:
         raise StockError("Choose paid, partial, or unpaid.")
@@ -1606,36 +2538,68 @@ def create_expense(me, *, category, name, amount, payment_status,
         raise StockError("Enter the supplier's phone number.")
 
     supplier = upsert_expense_supplier(name=sname, dial=dial, phone=national)
-    paid = amount if status == "paid" else Decimal("0.00")
-    return Expense.objects.create(
-        shop_id=me.pk,
-        category=category,
-        name=name,
-        amount=amount,
-        amount_paid=paid,
-        cash_amount=paid,
-        mpesa_amount=Decimal("0"),
-        payment_status=status,
-        supplier_id=supplier.pk if supplier else None,
-        supplier_name=sname.upper(),
-        supplier_phone_country_code=dial,
-        supplier_phone_number=national,
-        created_by_id=employee_id,
-    )
+    created = []
+    for line in parsed:
+        paid = line["amount"] if status == "paid" else Decimal("0.00")
+        created.append(
+            Expense.objects.create(
+                shop_id=me.pk,
+                category=line["category"],
+                name=line["name"],
+                amount=line["amount"],
+                amount_paid=paid,
+                cash_amount=paid,
+                mpesa_amount=Decimal("0"),
+                payment_status=status,
+                supplier_id=supplier.pk if supplier else None,
+                supplier_name=sname.upper(),
+                supplier_phone_country_code=dial,
+                supplier_phone_number=national,
+                created_by_id=employee_id,
+            )
+        )
+    return created
 
 
-def expense_card(expense, shop) -> dict:
+def create_expense(me, **kwargs):
+    """Back-compat wrapper — returns the first (or only) created expense."""
+    return create_expenses(me, **kwargs)[0]
+
+
+def expense_card(expenses, shop) -> dict:
+    """Card for one or more expenses registered together."""
+    if not isinstance(expenses, (list, tuple)):
+        expenses = [expenses]
+    if not expenses:
+        raise StockError("Add at least one expense.")
+    total = sum((_money(e.amount) for e in expenses), Decimal("0.00"))
+    first = expenses[0]
+    items = [
+        {
+            "name": e.name,
+            "category": EXPENSE_CATEGORY_LABELS.get(e.category, e.category),
+            "amount": f"{_money(e.amount):,.2f}",
+        }
+        for e in expenses
+    ]
     return {
         "expense": {
-            "expense_id": expense.pk,
+            "expense_id": first.pk,
             "shop": shop.name,
-            "name": expense.name,
-            "category": EXPENSE_CATEGORY_LABELS.get(
-                expense.category, expense.category
+            "name": (
+                first.name
+                if len(expenses) == 1
+                else f"{len(expenses)} expenses"
             ),
-            "amount": f"{_money(expense.amount):,.2f}",
-            "status": expense.payment_status.capitalize(),
-            "supplier": expense.supplier_name,
+            "category": (
+                EXPENSE_CATEGORY_LABELS.get(first.category, first.category)
+                if len(expenses) == 1
+                else ""
+            ),
+            "amount": f"{total:,.2f}",
+            "status": first.payment_status.capitalize(),
+            "supplier": first.supplier_name,
+            "items": items,
         }
     }
 
@@ -1696,17 +2660,15 @@ def _run_action(action: str, me, payload: dict, employee_id):
             "supplier_label": f"{supplier_name} ({dial} {national})",
         }
     if action == "expense":
-        expense = create_expense(
+        expenses = create_expenses(
             me,
-            category=payload.get("category") or "",
-            name=payload.get("name") or "",
-            amount=payload.get("amount"),
+            payload=payload,
             payment_status=payload.get("payment_status") or "",
             supplier_name=payload.get("supplier_name") or "",
             supplier_phone=payload.get("supplier_phone") or "",
             employee_id=employee_id,
         )
-        return {"action": action, "expense": expense}
+        return {"action": action, "expenses": expenses, "expense": expenses[0]}
     if action == "sale":
         due = None
         raw_due = (payload.get("credit_due_date") or "").strip()
@@ -1823,24 +2785,34 @@ def _pending_display(result: dict) -> dict:
             ),
         }
     if action == "expense":
-        expense = result["expense"]
-        cat = EXPENSE_CATEGORY_LABELS.get(expense.category, expense.category)
+        expenses = result.get("expenses") or [result["expense"]]
+        total = sum((_money(e.amount) for e in expenses), Decimal("0.00"))
+        supplier = expenses[0].supplier_name
+        count = len(expenses)
         return {
-            "title": "Expense",
-            "detail": f"{cat} · {expense.supplier_name}",
+            "title": "Expense" if count == 1 else f"{count} expenses",
+            "detail": supplier,
             "items": [
                 {
-                    "name": expense.name,
+                    "name": e.name,
                     "qty": "",
-                    "note": cat,
+                    "note": EXPENSE_CATEGORY_LABELS.get(
+                        e.category, e.category
+                    ),
                     "serials": [],
                 }
+                for e in expenses
             ],
-            "total": f"KSh {_money(expense.amount):,.2f}",
+            "total": f"KSh {total:,.2f}",
             "body": (
-                "Pending member confirmation — expense: "
-                f"{expense.name} · KSh {_money(expense.amount):,.2f}"
-                f" — {expense.supplier_name}"
+                "Pending member confirmation — "
+                + (
+                    f"expense: {expenses[0].name} · KSh "
+                    f"{_money(expenses[0].amount):,.2f}"
+                    if count == 1
+                    else f"{count} expenses · KSh {total:,.2f}"
+                )
+                + f" — {supplier}"
             ),
         }
     receipt = result["receipt"]
@@ -1947,12 +2919,20 @@ def execute_pending(me, pa: dict, employee_id):
             + f" — {result['supplier_name']}"
         )
     elif action == "expense":
-        expense = result["expense"]
-        result["meta"] = expense_card(expense, me)
-        result["body"] = (
-            f"Expense {expense.name} — KSh {_money(expense.amount):,.2f}"
-            f" · {expense.payment_status} — {expense.supplier_name}"
-        )
+        expenses = result.get("expenses") or [result["expense"]]
+        total = sum((_money(e.amount) for e in expenses), Decimal("0.00"))
+        result["meta"] = expense_card(expenses, me)
+        if len(expenses) == 1:
+            e = expenses[0]
+            result["body"] = (
+                f"Expense {e.name} — KSh {_money(e.amount):,.2f}"
+                f" · {e.payment_status} — {e.supplier_name}"
+            )
+        else:
+            result["body"] = (
+                f"{len(expenses)} expenses — KSh {total:,.2f}"
+                f" · {expenses[0].payment_status} — {expenses[0].supplier_name}"
+            )
     else:
         receipt = result["receipt"]
         count = len(result["lines"])

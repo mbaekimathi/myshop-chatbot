@@ -106,6 +106,8 @@ class ShopReceipt(models.Model):
     return_payment_events = models.JSONField(default=list)
     source_shop_id = models.BigIntegerField(null=True, blank=True)
     credit_due_date = models.DateField(null=True, blank=True)
+    last_returned_at = models.DateTimeField(null=True, blank=True)
+    last_returned_by_id = models.BigIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

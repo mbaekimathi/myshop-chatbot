@@ -29,6 +29,7 @@
   data-supplier-search-url="{% url 'chat:api_supplier_search' %}"
   data-client-search-url="{% url 'chat:api_client_search' %}"
   data-serial-search-url="{% url 'chat:api_serial_search' %}"
+  data-receipts-url="{% url 'chat:receipts' %}"
   data-me-id="{{ me.id }}"
 >
   {% csrf_token %}
@@ -87,20 +88,35 @@
         <button type="button" class="wa-fab" data-fab="sale" title="New sale" aria-label="New sale">
           <i data-lucide="shopping-cart" aria-hidden="true"></i>
         </button>
-        <button type="button" class="wa-fab" data-fab="stockin" title="Stock in" aria-label="Stock in">
-          <i data-lucide="package-plus" aria-hidden="true"></i>
-        </button>
-        <button type="button" class="wa-fab" data-fab="transfer" title="Transfer stock" aria-label="Transfer stock">
-          <i data-lucide="arrow-right-left" aria-hidden="true"></i>
-        </button>
-        {% if me.trade_enabled %}
-        <button type="button" class="wa-fab" data-fab="trade" title="Trade" aria-label="Trade">
-          <i data-lucide="repeat" aria-hidden="true"></i>
-        </button>
-        {% endif %}
-        <button type="button" class="wa-fab" data-fab="expense" title="Register expense" aria-label="Register expense">
-          <i data-lucide="wallet" aria-hidden="true"></i>
-        </button>
+        <div class="wa-fab-group" data-fab-others>
+          <div class="wa-fab-more" data-fab-more hidden>
+            <button type="button" data-fab="stockin">
+              <i data-lucide="package-plus" aria-hidden="true"></i><span>Stock in</span>
+            </button>
+            <button type="button" data-fab="transfer">
+              <i data-lucide="arrow-right-left" aria-hidden="true"></i><span>Transfer</span>
+            </button>
+            {% if me.trade_out %}
+            <button type="button" data-fab="trade_out">
+              <i data-lucide="repeat" aria-hidden="true"></i><span>Trade out</span>
+            </button>
+            {% endif %}
+            {% if me.trade_in %}
+            <button type="button" data-fab="trade_in">
+              <i data-lucide="repeat" aria-hidden="true"></i><span>Trade in</span>
+            </button>
+            {% endif %}
+            <button type="button" data-fab="expense">
+              <i data-lucide="wallet" aria-hidden="true"></i><span>Expense</span>
+            </button>
+            <button type="button" data-fab="receipts">
+              <i data-lucide="receipt" aria-hidden="true"></i><span>Receipts</span>
+            </button>
+          </div>
+          <button type="button" class="wa-fab" data-fab-others-toggle title="Others" aria-label="Others" aria-expanded="false" aria-haspopup="true">
+            <i data-lucide="ellipsis" aria-hidden="true"></i>
+          </button>
+        </div>
       </div>
     </aside>
 
@@ -275,7 +291,7 @@
       {% endif %}
 
       <div class="wa-stock__supplier" data-stock-expense hidden>
-        <p class="wa-stock__label">Expense</p>
+        <p class="wa-stock__label">Add expense</p>
         <div class="wa-stock__expgrid">
           <select data-expense-category aria-label="Expense category">
             <option value="">Category…</option>
@@ -296,14 +312,15 @@
           <input type="number" placeholder="0.00" min="0" step="any" inputmode="decimal"
                  data-expense-amount aria-label="Amount">
         </div>
+        <button type="button" class="wa-chip wa-chip--send" data-expense-add>Add</button>
       </div>
 
       <div data-stock-itemwrap>
-      <p class="wa-stock__label">Items <span class="wa-stock__count" data-stock-count hidden>0</span></p>
+      <p class="wa-stock__label"><span data-stock-listlabel>Items</span> <span class="wa-stock__count" data-stock-count hidden>0</span></p>
       <div class="wa-stock__items" data-stock-items></div>
       <p class="wa-app__none" data-stock-empty>Add items with the search below.</p>
 
-      <div class="wa-stock__add">
+      <div class="wa-stock__add" data-stock-itemadd>
         <div class="wa-stock__typeahead">
           <input type="text" placeholder="Type item name…" autocomplete="off" data-stock-item-input>
           <div class="wa-stock__suggest" data-stock-item-suggest hidden></div>
@@ -333,44 +350,47 @@
     </div>
 
     <div class="wa-stock__foot">
+      <div class="wa-stock__checkout" data-stock-checkout>
       <button type="button" class="wa-stock__detailstoggle" data-stock-detailstoggle
               hidden aria-expanded="false" aria-controls="wa-stock-details">
         <span data-stock-detailstoggle-label>Payment &amp; client</span>
         <i data-lucide="chevron-down" aria-hidden="true"></i>
       </button>
       <div class="wa-stock__details" id="wa-stock-details" data-stock-details hidden>
-      <div class="wa-stock__supplier" data-stock-supplier hidden>
-        <p class="wa-stock__label">Supplier <em>(required)</em></p>
+      <div class="wa-stock__fields" data-stock-supplier hidden>
         <div class="wa-stock__typeahead">
           <input type="tel" placeholder="Phone number e.g. 0712 345 678"
-                 autocomplete="off" inputmode="tel" data-stock-phone>
+                 autocomplete="off" inputmode="tel" data-stock-phone
+                 aria-label="Supplier phone">
           <div class="wa-stock__suggest" data-stock-phone-suggest hidden></div>
         </div>
         <div class="wa-stock__typeahead">
           <input type="text" placeholder="Supplier name" autocomplete="off"
-                 data-stock-supname>
+                 data-stock-supname aria-label="Supplier name">
           <div class="wa-stock__suggest" data-stock-name-suggest hidden></div>
         </div>
       </div>
-      <div class="wa-stock__supplier" data-stock-payment hidden>
+      <div class="wa-stock__fields" data-stock-payment hidden>
         <p class="wa-stock__label">Payment <em>(required)</em></p>
-        <select data-stock-kind>
-          <option value="sale">Sale</option>
-          <option value="credit">Credit</option>
-          <option value="quotation">Quotation</option>
-        </select>
-        <select data-stock-paymethod>
-          <option value="cash">Cash</option>
-          <option value="mpesa">M-Pesa</option>
-          <option value="both">Cash + M-Pesa</option>
-        </select>
+        <div class="wa-stock__expgrid">
+          <select data-stock-kind aria-label="Sale type">
+            <option value="sale">Sale</option>
+            <option value="credit">Credit</option>
+            <option value="quotation">Quotation</option>
+          </select>
+          <select data-stock-paymethod aria-label="Payment method">
+            <option value="cash">Cash</option>
+            <option value="mpesa">M-Pesa</option>
+            <option value="both">Cash + M-Pesa</option>
+          </select>
+        </div>
         <input type="date" data-stock-duedate hidden title="Credit due date">
         <div class="wa-stock__paysplit" data-stock-paysplit hidden>
           <input type="number" placeholder="Cash amount" min="0" step="any" data-stock-cashamt>
           <input type="number" placeholder="M-Pesa amount" min="0" step="any" data-stock-mpesaamt>
         </div>
       </div>
-      <div class="wa-stock__supplier" data-stock-client hidden>
+      <div class="wa-stock__fields" data-stock-client hidden>
         <p class="wa-stock__label">Client</p>
         <div class="wa-stock__typeahead">
           <input type="text" placeholder="Client name (optional)" autocomplete="off" data-stock-clientname>
@@ -386,13 +406,16 @@
         </label>
       </div>
       </div>
+      </div>
       <div class="wa-stock__total" data-stock-total hidden>
         <span>Total</span><b data-stock-total-val>KSh 0.00</b>
       </div>
       <div class="wa-stock__codebox" data-stock-codebox hidden>
-        <input type="password" placeholder="Enter staff code to complete" autocomplete="new-password"
+        <label class="wa-stock__codelabel" for="wa-stock-staffcode">Staff code</label>
+        <input id="wa-stock-staffcode" type="password" placeholder="••••••" autocomplete="new-password"
                inputmode="numeric" maxlength="6" spellcheck="false"
-               data-lpignore="true" data-1p-ignore="true" data-stock-staffcode>
+               data-lpignore="true" data-1p-ignore="true" data-stock-staffcode
+               aria-label="6-digit staff code">
         <span class="wa-stock__codehint">Sale completes when your code is verified</span>
       </div>
       <button type="button" class="btn btn--block wa-stock__send" data-stock-submit>
@@ -420,5 +443,5 @@
 
 {% block extra_js %}
 <script defer src="{% static 'js/vendor/html5-qrcode.min.js' %}"></script>
-<script defer src="{% static 'js/chatbot.js' %}?v=56"></script>
+<script defer src="{% static 'js/chatbot.js' %}?v=60"></script>
 {% endblock %}

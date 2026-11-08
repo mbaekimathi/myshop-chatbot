@@ -527,7 +527,11 @@
   // Live send: picking a complete value for the active mode sends it —
   // day on date pick, month on month pick, year on year pick, and a
   // period once both from + to dates are chosen.
-  period.addEventListener("change", function () {
+  // Receipt status is choose-only — user taps the arrow to apply.
+  period.addEventListener("change", function (e) {
+    if (e.target && e.target.matches && e.target.matches("#allReceiptStatus, [data-wa-receipt-status]")) {
+      return;
+    }
     if (periodMode === "day" && !dateDay.value) return;
     if (periodMode === "month" && !monthInput.value) return;
     if (periodMode === "year" && !yearSel.value) return;

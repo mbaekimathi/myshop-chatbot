@@ -7,6 +7,7 @@ import mimetypes
 import os
 import re
 
+from django.conf import settings
 from django.core.cache import cache
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
@@ -166,6 +167,18 @@ def home(request):
 
 
 @require_GET
+def service_worker(request):
+    """Root-scoped SW with no-cache so every deploy is detected quickly."""
+    path = os.path.join(settings.BASE_DIR, "static", "sw.js")
+    if not os.path.isfile(path):
+        raise Http404()
+    resp = FileResponse(open(path, "rb"), content_type="application/javascript")
+    resp["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp["Service-Worker-Allowed"] = "/"
+    return resp
+
+
+@require_GET
 def app_icon(request, size: int):
     """PNG app icon branded with the company name (fallback: MY SHOP).
 
@@ -177,15 +190,16 @@ def app_icon(request, size: int):
     rounded = request.GET.get("rounded") in {"1", "true", "any"}
     label = icon_ops.icon_label()
     # Memcached-safe key (no spaces / punctuation from company names).
-    digest = hashlib.sha1(f"{size}:{int(rounded)}:{label}".encode()).hexdigest()[:16]
+    digest = hashlib.sha1(
+        f"{icon_ops.ICON_ASSET_VERSION}:{size}:{int(rounded)}:{label}".encode()
+    ).hexdigest()[:16]
     cache_key = f"chat:app-icon:{digest}"
     png = cache.get(cache_key)
     if not png:
         png = icon_ops.render_app_icon(size, rounded=rounded)
         cache.set(cache_key, png, 3600)
     resp = HttpResponse(png, content_type="image/png")
-    # Short browser cache — installed PWAs still need uninstall/reinstall
-    # to refresh the home-screen icon; this helps tabs + new installs.
+    # Versioned URLs (`?v=`) bust clients; keep a short cache for repeats.
     resp["Cache-Control"] = "public, max-age=300"
     return resp
 
@@ -194,7 +208,11 @@ def app_icon(request, size: int):
 def manifest(request):
     """PWA manifest — rendered dynamically so the install name follows the
     company name set in MY-SHOP settings. Unauthenticated on purpose: manifest
-    fetches carry no credentials."""
+    fetches carry no credentials.
+
+    Stable `id` + changing icon URLs let Chrome auto-update installed apps
+    (including the home-screen icon on Android) when the PWA is opened.
+    """
     name = services.app_name()
     bust = icon_ops.icon_cache_bust()
     icon_192 = reverse("chat:app_icon", kwargs={"size": 192})
@@ -227,6 +245,8 @@ def manifest(request):
     ]
     resp = JsonResponse(
         {
+            # Stable identity — do not change this or Chrome treats it as a new app.
+            "id": "/",
             "name": name,
             "short_name": name,
             "description": "Shop-to-shop chat and business data assistant",
@@ -239,7 +259,7 @@ def manifest(request):
             "icons": icons,
         }
     )
-    resp["Cache-Control"] = "no-cache"
+    resp["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
 
 

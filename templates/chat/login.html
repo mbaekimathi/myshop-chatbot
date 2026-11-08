@@ -284,22 +284,8 @@
           try { sessionStorage.setItem("myshop-install-dismissed", "1"); } catch (e) {}
         });
       }
-      // Auto-update: check for a new service worker on every load so a
-      // freshly deployed version is picked up automatically on login.
-      if ("serviceWorker" in navigator) {
-        navigator.serviceWorker
-          .register("/static/sw.js?v=2026-11-08.2", { scope: "/" })
-          .then(function (reg) {
-            reg.update();
-            reg.addEventListener("updatefound", function () {
-              var w = reg.installing;
-              if (w) w.addEventListener("statechange", function () {
-                if (w.state === "activated") location.reload();
-              });
-            });
-          })
-          .catch(function () {});
-      }
+      // Service worker registration + auto-update lives in pwa-update.js
+      // (loaded from base.html on every page, including the installed PWA).
     }
 
     var themeBtn = document.querySelector("[data-theme-toggle]");

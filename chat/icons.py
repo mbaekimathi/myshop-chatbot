@@ -12,7 +12,7 @@ from django.conf import settings
 from . import services
 
 # Bump when the drawn icon design changes so manifests/favicons bust cache.
-ICON_ASSET_VERSION = "2026-11-08.2"
+ICON_ASSET_VERSION = "2026-11-08.3"
 
 # Teal wash matching the chat --wa-* tokens (flat, no gloss).
 _BG_TOP = (37, 211, 102)       # --wa-green #25d366

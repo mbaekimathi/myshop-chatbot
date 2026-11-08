@@ -138,8 +138,15 @@ class IconTests(ChatTestCase):
         self.assertTrue(resp.content.startswith(b"\x89PNG"))
 
         manifest = self.client.get(reverse("chat:manifest")).json()
+        self.assertEqual(manifest["id"], "/")
         self.assertTrue(manifest["icons"])
         self.assertTrue(manifest["icons"][0]["src"].startswith("/icon-"))
+        self.assertIn("v=", manifest["icons"][0]["src"])
+
+        sw = self.client.get(reverse("chat:service_worker"))
+        self.assertEqual(sw.status_code, 200)
+        self.assertIn("javascript", sw["Content-Type"])
+        self.assertIn("no-cache", sw["Cache-Control"])
 
 
 class AuthTests(ChatTestCase):

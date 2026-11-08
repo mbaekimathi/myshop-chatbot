@@ -99,6 +99,13 @@ conversation list + new messages; the JS polls ~2.5s (8s hidden, exponential
 backoff on errors). Presence = `Participant.last_seen_at` (25s window),
 typing = `typing_until` (+4s), read ticks = `last_read_id`.
 
+## PWA auto-update
+`static/js/pwa-update.js` (every page) registers `GET /sw.js` and rechecks on
+focus / every 5 min; a new worker reloads the app. Manifest stays at a stable
+`/manifest.json` with `id: "/"`; icon URLs include `?v=` so Chrome can refresh
+the home-screen icon after the installed app is opened (Android). Desktop /
+iOS icon refresh is browser-limited.
+
 ## Deploy (cPanel/Passenger at /home3/richcomc/CHAT)
 ```bash
 ./deploy.sh   # pull → pip install → migrate → collectstatic --clear → restart

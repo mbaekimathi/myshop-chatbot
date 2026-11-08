@@ -43,8 +43,20 @@
   var yearSel = document.getElementById("allYear");
   var periodGo = document.getElementById("allPeriodGo");
   var periodClose = document.getElementById("allPeriodClose");
+  var receiptScope = document.getElementById("allReceiptScope");
+  var receiptStatusSel = document.getElementById("allReceiptStatus");
   var botTopic = "";
   var periodMode = "day";
+  var RECEIPT_STATUS_TOPICS = { sales: 1, items: 1, summary: 1 };
+  var receiptStatusDefault = "pending";
+  try {
+    var rsEl = document.getElementById("all-init-receipt-status");
+    if (rsEl) receiptStatusDefault = JSON.parse(rsEl.textContent);
+  } catch (e) {}
+  if (receiptStatusDefault !== "confirmed" && receiptStatusDefault !== "pending") {
+    receiptStatusDefault = "pending";
+  }
+  var receiptStatus = receiptStatusDefault;
 
   function esc(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
@@ -57,8 +69,8 @@
   function fmt(t) {
     var h = esc(t);
     h = h.replace(
-      /%%items\|([0-9-]+)\|([0-9-]+)%%/g,
-      '<a class="wa-link" href="#" data-bitems="$1:$2">View items sold →</a>'
+      /%%items\|([0-9-]+)\|([0-9-]+)(?:\|(pending|confirmed))?%%/g,
+      '<a class="wa-link" href="#" data-bitems="$1:$2:$3">View items sold →</a>'
     );
     h = h.replace(/\*([^*\n]+)\*/g, "<strong>$1</strong>");
     h = h.replace(/_([^_\n]+)_/g, "<em>$1</em>");
@@ -221,7 +233,8 @@
       var c = card.sales;
       var itemsLink = c.start && c.end
         ? '<a class="wa-link" href="#" data-bitems="' +
-          esc(c.start + ":" + c.end) + '">View items sold →</a>'
+          esc(c.start + ":" + c.end + ":" + (c.receipt_status || "")) +
+          '">View items sold →</a>'
         : "";
       return statCard("trending-up", "Sales — all shops · " + c.label, [
         ["Total", c.total, 1],
@@ -391,7 +404,10 @@
     if (!bitems) return;
     e.preventDefault();
     var rng = bitems.dataset.bitems.split(":");
-    send("items " + rng[0] + " to " + rng[1]);
+    send(
+      "items " + rng[0] + " to " + rng[1] +
+      (rng[2] ? " " + rng[2] : "")
+    );
   });
 
   // ------------------------------------------------------------------
@@ -412,6 +428,16 @@
     var p = iso.split("-");
     return parseInt(p[2], 10) + " " +
            MONTHS_SHORT[parseInt(p[1], 10) - 1] + " " + p[0];
+  }
+
+  function topicNeedsReceiptStatus(topic) {
+    return !!RECEIPT_STATUS_TOPICS[(topic || "").toLowerCase()];
+  }
+
+  function setReceiptStatus(status) {
+    if (status !== "pending" && status !== "confirmed") return;
+    receiptStatus = status;
+    if (receiptStatusSel) receiptStatusSel.value = status;
   }
 
   function setPeriodMode(mode) {
@@ -436,6 +462,8 @@
       (now.getMonth() + 1 < 10 ? "0" : "") + (now.getMonth() + 1);
     yearSel.value = String(now.getFullYear());
     setPeriodMode("day");
+    if (receiptScope) receiptScope.hidden = !topicNeedsReceiptStatus(topic);
+    setReceiptStatus(receiptStatusDefault);
     period.hidden = false;
     dateDay.focus();
     if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
@@ -464,6 +492,9 @@
              " to 31 Dec " + parseInt(yearSel.value, 10);
     }
     if (!text) return;
+    if (topicNeedsReceiptStatus(botTopic)) {
+      text += " " + receiptStatus;
+    }
     dateFrom.value = "";
     dateTo.value = "";
     period.hidden = true;
@@ -479,6 +510,11 @@
     var b = e.target.closest("[data-period-mode]");
     if (b) setPeriodMode(b.dataset.periodMode);
   });
+  if (receiptStatusSel) {
+    receiptStatusSel.addEventListener("change", function () {
+      setReceiptStatus(receiptStatusSel.value);
+    });
+  }
   period.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.target.closest("button")) {
       e.preventDefault();

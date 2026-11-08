@@ -335,7 +335,9 @@ def _shop_overview():
         r["shop_id"]: r
         for r in ShopReceipt.objects.filter(
             kind=bot_engine.SALE_KIND,
-            status__in=bot_engine.COUNTED_STATUSES,
+            status__in=bot_engine._analytics_statuses(
+                bot_engine.analytics_receipt_default()
+            ),
             created_at__gte=start_dt,
             created_at__lt=end_dt,
         )
@@ -446,6 +448,9 @@ def all_shops_view(request):
                 "expenses": bot_engine.money(totals["expenses"]),
                 "credit": bot_engine.money(totals["credit"]),
             },
+            "receipt_status_default_json": json.dumps(
+                bot_engine.analytics_receipt_default()
+            ),
         },
     )
 
@@ -509,6 +514,9 @@ def app_view(request):
         "conversations_json": json.dumps(_conversations_payload(me)),
         "contacts_json": json.dumps(contacts),
         "suggestions_json": json.dumps(bot_engine.BOT_SUGGESTIONS),
+        "receipt_status_default_json": json.dumps(
+            bot_engine.analytics_receipt_default()
+        ),
         "expense_categories": stock_ops.EXPENSE_CATEGORIES,
     }
     return render(request, "chat/app.html", context)

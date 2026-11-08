@@ -97,6 +97,7 @@
     <section class="wa-app__chat">
       <div class="all-sugs" id="allSugs">
         <button type="button" class="wa-sug" data-sug="Sales">Sales</button>
+        <button type="button" class="wa-sug" data-sug="Items">Items</button>
         <button type="button" class="wa-sug" data-sug="Credits">Credits</button>
         <button type="button" class="wa-sug" data-sug="Expenses">Expenses</button>
         <button type="button" class="wa-sug" data-sug="Stock movement">Stock movement</button>
@@ -111,6 +112,13 @@
           <button type="button" class="wa-period__btn" data-period-mode="month">Month</button>
           <button type="button" class="wa-period__btn" data-period-mode="year">Year</button>
         </span>
+        <label class="wa-period__scope" id="allReceiptScope" hidden>
+          <span class="wa-period__scope-label">Receipts</span>
+          <select id="allReceiptStatus" aria-label="Receipt status" title="Pending or confirmed receipts">
+            <option value="pending">Pending</option>
+            <option value="confirmed">Confirmed</option>
+          </select>
+        </label>
         <span class="wa-period__fields">
           <input type="date" id="allDateDay" aria-label="Pick a day" title="Day">
           <input type="date" id="allDateFrom" aria-label="From date" title="From" hidden>
@@ -165,5 +173,6 @@
 {% endblock %}
 
 {% block extra_js %}
-<script defer src="{% static 'js/all.js' %}?v=10"></script>
+<script type="application/json" id="all-init-receipt-status">{{ receipt_status_default_json|safe }}</script>
+<script defer src="{% static 'js/all.js' %}?v=13"></script>
 {% endblock %}

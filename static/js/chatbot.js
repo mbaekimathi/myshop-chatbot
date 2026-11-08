@@ -47,6 +47,10 @@
 
   var me = readJson("chat-init-me", { id: 0, name: "" });
   var suggestions = readJson("chat-init-suggestions", []);
+  var receiptStatusDefault = readJson("chat-init-receipt-status", "pending");
+  if (receiptStatusDefault !== "confirmed" && receiptStatusDefault !== "pending") {
+    receiptStatusDefault = "pending";
+  }
 
   // ------------------------------------------------------------------
   // In-app history — Android / browser Back closes chat overlays
@@ -125,6 +129,7 @@
     lastTypingSent: 0,
     botTopic: "",
     periodMode: "day",
+    receiptStatus: receiptStatusDefault,
     stock: { mode: null, lines: [], picked: null, serials: [], submitting: false },
     rcvSerials: {},
     toastTimer: null,
@@ -160,6 +165,8 @@
     yearSel: root.querySelector("[data-wa-year]"),
     periodGo: root.querySelector("[data-wa-period-go]"),
     periodClose: root.querySelector("[data-wa-period-close]"),
+    receiptScope: root.querySelector("[data-wa-receipt-scope]"),
+    receiptStatusSel: root.querySelector("[data-wa-receipt-status]"),
     contacts: root.querySelector("[data-wa-contacts]"),
     contactList: root.querySelector("[data-wa-contact-list]"),
     contactSearch: root.querySelector("[data-wa-contact-search]"),
@@ -285,8 +292,8 @@
   function formatBody(text) {
     var html = escapeHtml(text);
     html = html.replace(
-      /%%items\|([0-9-]+)\|([0-9-]+)%%/g,
-      '<a class="wa-link" href="#" data-bitems="$1:$2">View items sold →</a>'
+      /%%items\|([0-9-]+)\|([0-9-]+)(?:\|(pending|confirmed))?%%/g,
+      '<a class="wa-link" href="#" data-bitems="$1:$2:$3">View items sold →</a>'
     );
     html = html.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
     html = html.replace(/\*([^*\n]+)\*/g, "<strong>$1</strong>");
@@ -637,7 +644,8 @@
       var c = card.sales;
       var itemsLink = c.start && c.end
         ? '<a class="wa-link" href="#" data-bitems="' +
-          escapeHtml(c.start + ":" + c.end) + '">View items sold →</a>'
+          escapeHtml(c.start + ":" + c.end + ":" + (c.receipt_status || "")) +
+          '">View items sold →</a>'
         : "";
       return statCard("trending-up", "Sales — " + c.label, [
         ["Total", c.total, 1],
@@ -3077,6 +3085,18 @@
     els.yearSel.innerHTML = opts;
   }
 
+  var RECEIPT_STATUS_TOPICS = { sales: 1, items: 1, summary: 1 };
+
+  function topicNeedsReceiptStatus(topic) {
+    return !!RECEIPT_STATUS_TOPICS[(topic || "").toLowerCase()];
+  }
+
+  function setReceiptStatus(status) {
+    if (status !== "pending" && status !== "confirmed") return;
+    state.receiptStatus = status;
+    if (els.receiptStatusSel) els.receiptStatusSel.value = status;
+  }
+
   function setPeriodMode(mode) {
     state.periodMode = mode;
     els.period.querySelectorAll("[data-period-mode]").forEach(function (b) {
@@ -3099,6 +3119,9 @@
       (now.getMonth() + 1 < 10 ? "0" : "") + (now.getMonth() + 1);
     els.yearSel.value = String(now.getFullYear());
     setPeriodMode("day");
+    var showScope = topicNeedsReceiptStatus(topic);
+    if (els.receiptScope) els.receiptScope.hidden = !showScope;
+    setReceiptStatus(receiptStatusDefault);
     els.period.hidden = false;
     els.dateDay.focus();
     refreshIcons();
@@ -3117,6 +3140,12 @@
     var btn = e.target.closest("[data-period-mode]");
     if (btn) setPeriodMode(btn.dataset.periodMode);
   });
+
+  if (els.receiptStatusSel) {
+    els.receiptStatusSel.addEventListener("change", function () {
+      setReceiptStatus(els.receiptStatusSel.value);
+    });
+  }
 
   els.period.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.target.closest("button")) {
@@ -3164,6 +3193,9 @@
              " to 31 Dec " + parseInt(els.yearSel.value, 10);
     }
     if (!text) return;
+    if (topicNeedsReceiptStatus(state.botTopic)) {
+      text += " " + state.receiptStatus;
+    }
     els.dateFrom.value = "";
     els.dateTo.value = "";
     sendText(text);
@@ -3366,7 +3398,10 @@
     if (bitems) {
       e.preventDefault();
       var rng = bitems.dataset.bitems.split(":");
-      sendText("items " + rng[0] + " to " + rng[1]);
+      sendText(
+        "items " + rng[0] + " to " + rng[1] +
+        (rng[2] ? " " + rng[2] : "")
+      );
       return;
     }
 

@@ -35,6 +35,7 @@
   <script type="application/json" id="chat-init-conversations">{{ conversations_json|safe }}</script>
   <script type="application/json" id="chat-init-contacts">{{ contacts_json|safe }}</script>
   <script type="application/json" id="chat-init-suggestions">{{ suggestions_json|safe }}</script>
+  <script type="application/json" id="chat-init-receipt-status">{{ receipt_status_default_json|safe }}</script>
   <script type="application/json" id="chat-init-me">{"id": {{ me.id }}, "name": "{{ me.name|escapejs }}", "code": "{{ me.code }}", "location": "{{ me.location|escapejs }}", "initials": "{{ me.initials }}", "tone": {{ me.tone }}, "needs_member_confirm": {{ me.needs_member_confirm|yesno:"true,false" }}, "staff_view": {{ me.staff_view|yesno:"true,false" }}, "trade_out": {{ me.trade_out|yesno:"true,false" }}, "trade_in": {{ me.trade_in|yesno:"true,false" }}}</script>
 
   <header class="wa-app__bar">
@@ -138,6 +139,13 @@
             <button type="button" class="wa-period__btn" data-period-mode="month">Month</button>
             <button type="button" class="wa-period__btn" data-period-mode="year">Year</button>
           </span>
+          <label class="wa-period__scope" data-wa-receipt-scope hidden>
+            <span class="wa-period__scope-label">Receipts</span>
+            <select data-wa-receipt-status aria-label="Receipt status" title="Pending or confirmed receipts">
+              <option value="pending">Pending</option>
+              <option value="confirmed">Confirmed</option>
+            </select>
+          </label>
           <span class="wa-period__fields">
             <input type="date" data-wa-date-day aria-label="Pick a day" title="Day">
             <input type="date" data-wa-date-from aria-label="From date" title="From" hidden>
@@ -412,5 +420,5 @@
 
 {% block extra_js %}
 <script defer src="{% static 'js/vendor/html5-qrcode.min.js' %}"></script>
-<script defer src="{% static 'js/chatbot.js' %}?v=52"></script>
+<script defer src="{% static 'js/chatbot.js' %}?v=55"></script>
 {% endblock %}

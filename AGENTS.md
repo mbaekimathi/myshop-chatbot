@@ -10,8 +10,10 @@ Shares the `myshop` MySQL DB with the MY-SHOP project (`..\MY-SHOP`).
 - `chat/myshop_models.py` — `managed = False` read models over MY-SHOP tables
   (`shops_shop`, `items_*`, `shops_shopreceipt*`, `shops_expense`,
   `shops_shopdaysession`, `shops_companyprofile`,
-  `shops_companypossettings`, `shops_shoppossettings`). Never add real FKs
-  to them.
+  `shops_companyanalyticssettings`, `shops_companypossettings`,
+  `shops_shoppossettings`). Never add real FKs to them.
+  Sales / item analytics follow `receipt_data_source` (pending|confirmed);
+  the user can override in chat (`sales today confirmed`).
 - `chat/models.py` — owned tables `chat_conversation`, `chat_participant`,
   `chat_message`. `shop_id` is a plain bigint pointing at `shops_shop.id`.
 - `MYSQL_ENABLED=False` falls back to `db.sqlite3` (tests).

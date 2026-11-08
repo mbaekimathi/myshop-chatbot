@@ -28,6 +28,7 @@ from .myshop_models import (
     ExpenseSupplier,
     ShopItemPrice,
     CompanyProfile,
+    CompanyAnalyticsSettings,
     CompanyPosSettings,
     ShopPosSettings,
     ItemSerial,
@@ -48,6 +49,7 @@ UNMANAGED = [
     ExpenseSupplier,
     ShopItemPrice,
     CompanyProfile,
+    CompanyAnalyticsSettings,
     CompanyPosSettings,
     ShopPosSettings,
     ItemSerial,
@@ -248,6 +250,10 @@ class BotTests(ChatTestCase):
     def setUp(self):
         super().setUp()
         self.login()
+        # Match confirmed receipt fixtures unless a test overrides the setting.
+        CompanyAnalyticsSettings.objects.create(
+            pk=1, receipt_data_source="confirmed"
+        )
         item = Item.objects.create(
             category="Grocery", name="Sugar 1kg",
             minimum_selling_price=Decimal("100"),
@@ -295,6 +301,48 @@ class BotTests(ChatTestCase):
     def test_sales_intent(self):
         reply = reply_for(self.shop_a, "how much did we sell today")
         self.assertIn("KSh 1,500.00", reply)
+
+    def test_sales_uses_analytics_receipt_default(self):
+        """Default company setting filters sales; message can override."""
+        CompanyAnalyticsSettings.objects.filter(pk=1).update(
+            receipt_data_source="confirmed"
+        )
+        ShopReceipt.objects.create(
+            shop_id=self.shop_a.pk, receipt_number="R-PEND",
+            kind="sale", payment_method="cash", client_name="",
+            total=Decimal("900"), amount_paid=Decimal("900"),
+            cash_amount=Decimal("900"), mpesa_amount=Decimal("0"),
+            status="active",
+        )
+        # Default confirmed → only the confirmed R-001 from setUp.
+        reply = reply_for(self.shop_a, "sales today")
+        self.assertIn("KSh 1,500.00", reply)
+        self.assertIn("confirmed receipts", reply)
+        self.assertNotIn("KSh 2,400.00", reply)
+
+        # Explicit pending override → only the active receipt.
+        pending = reply_for(self.shop_a, "sales today pending")
+        self.assertIn("KSh 900.00", pending)
+        self.assertIn("pending receipts", pending)
+        self.assertNotIn("KSh 1,500.00", pending)
+
+        # Explicit confirmed still works.
+        confirmed = reply_for(self.shop_a, "sales today confirmed")
+        self.assertIn("KSh 1,500.00", confirmed)
+        self.assertIn("confirmed receipts", confirmed)
+
+    def test_items_sold_respects_receipt_status(self):
+        CompanyAnalyticsSettings.objects.filter(pk=1).update(
+            receipt_data_source="pending"
+        )
+        # Confirmed receipt from setUp should be excluded under pending default.
+        reply = reply_for(self.shop_a, "items sold today")
+        self.assertIn("pending receipts", reply)
+        self.assertIn("No items sold", reply)
+
+        reply = reply_for(self.shop_a, "items sold today confirmed")
+        self.assertIn("Sugar 1kg", reply)
+        self.assertIn("confirmed receipts", reply)
 
     def test_stock_intent(self):
         reply = reply_for(self.shop_a, "stock sugar")

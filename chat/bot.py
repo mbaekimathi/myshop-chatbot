@@ -16,6 +16,7 @@ from django.utils import timezone
 
 from .myshop_models import (
     Client,
+    CompanyAnalyticsSettings,
     Expense,
     Item,
     Shop,
@@ -29,6 +30,8 @@ from .myshop_models import (
 )
 
 COUNTED_STATUSES = ("active", "confirmed", "partial_return")
+ANALYTICS_PENDING = "pending"
+ANALYTICS_CONFIRMED = "confirmed"
 SALE_KIND = "sale"
 CREDIT_KIND = "credit"
 
@@ -202,12 +205,57 @@ def _window(start_date, end_date):
     return start_dt, end_dt
 
 
-def _receipts(shop: Shop, start, end, kinds=(SALE_KIND,)):
+def analytics_receipt_default() -> str:
+    """Company default from MY-SHOP analytics settings (`pending` | `confirmed`)."""
+    try:
+        row = CompanyAnalyticsSettings.objects.filter(pk=1).first()
+        value = ((row.receipt_data_source if row else "") or "").strip().lower()
+        if value in (ANALYTICS_PENDING, ANALYTICS_CONFIRMED):
+            return value
+    except Exception:
+        pass
+    return ANALYTICS_PENDING
+
+
+def resolve_receipt_status(text: str | None = None) -> str:
+    """Pending/confirmed for sales & item analytics — message override or company default."""
+    low = (text or "").lower()
+    if re.search(r"\bconfirmed\b", low):
+        return ANALYTICS_CONFIRMED
+    if re.search(r"\b(pending|unconfirmed)\b", low):
+        return ANALYTICS_PENDING
+    return analytics_receipt_default()
+
+
+def _analytics_statuses(status_key: str | None) -> tuple[str, ...]:
+    """Map analytics scope → ShopReceipt.status values (same as MY-SHOP)."""
+    key = (status_key or "").strip().lower()
+    if key in (ANALYTICS_PENDING, "active"):
+        return ("active",)
+    if key == ANALYTICS_CONFIRMED:
+        return ("confirmed", "partial_return")
+    return _analytics_statuses(analytics_receipt_default())
+
+
+def _status_scope_label(status_key: str) -> str:
+    return (
+        "confirmed receipts"
+        if status_key == ANALYTICS_CONFIRMED
+        else "pending receipts"
+    )
+
+
+def _sales_label(date_label: str, status_key: str) -> str:
+    return f"{date_label} · {_status_scope_label(status_key)}"
+
+
+def _receipts(shop: Shop, start, end, kinds=(SALE_KIND,), receipt_status=None):
     start_dt, end_dt = _window(start, end)
+    statuses = _analytics_statuses(receipt_status or analytics_receipt_default())
     return ShopReceipt.objects.filter(
         shop_id=shop.pk,
         kind__in=kinds,
-        status__in=COUNTED_STATUSES,
+        status__in=statuses,
         created_at__gte=start_dt,
         created_at__lt=end_dt,
     )
@@ -262,7 +310,9 @@ def _credit_rows(qs, shop_names=None) -> list:
 
 def _sales_reply(shop: Shop, text: str) -> str:
     start, end, label = _date_range(text)
-    qs = _receipts(shop, start, end)
+    status = resolve_receipt_status(text)
+    scope = _sales_label(label, status)
+    qs = _receipts(shop, start, end, receipt_status=status)
     agg = qs.aggregate(
         total=Sum("total"),
         count=Count("id"),
@@ -272,17 +322,19 @@ def _sales_reply(shop: Shop, text: str) -> str:
     )
     count = agg["count"] or 0
     if not count:
-        return f"No sales recorded for {shop.name} {label}."
+        return f"No sales recorded for {shop.name} {scope}."
     lines = [
-        f"*Sales — {shop.name} ({label})*",
+        f"*Sales — {shop.name} ({scope})*",
         f"Total: *{money(agg['total'])}* across {count} receipt{'s' if count != 1 else ''}",
         f"Cash {money(agg['cash'])}  |  M-Pesa {money(agg['mpesa'])}",
     ]
-    credit_qs = _receipts(shop, start, end, kinds=(CREDIT_KIND,))
+    credit_qs = _receipts(
+        shop, start, end, kinds=(CREDIT_KIND,), receipt_status=status
+    )
     credit_total = credit_qs.aggregate(t=Sum("total"))["t"] or 0
     if credit_total:
         lines.append(f"Credit issued: {money(credit_total)}")
-    lines.append(f"%%items|{start.isoformat()}|{end.isoformat()}%%")
+    lines.append(f"%%items|{start.isoformat()}|{end.isoformat()}|{status}%%")
     return "\n".join(lines)
 
 
@@ -412,7 +464,9 @@ def _low_stock_reply(shop: Shop, text: str) -> str:
 
 def _top_sellers_reply(shop: Shop, text: str) -> str:
     start, end, label = _date_range(text if re.search(r"week|month|year|today", text, re.I) else "this month")
-    receipt_ids = _receipts(shop, start, end).values("id")
+    status = resolve_receipt_status(text)
+    scope = _sales_label(label, status)
+    receipt_ids = _receipts(shop, start, end, receipt_status=status).values("id")
     rows = (
         ShopReceiptLine.objects.filter(receipt_id__in=receipt_ids)
         .values("item_name")
@@ -421,8 +475,8 @@ def _top_sellers_reply(shop: Shop, text: str) -> str:
     )
     rows = [r for r in rows if (r["q"] or 0) > 0]
     if not rows:
-        return f"No sale lines found for {shop.name} {label}."
-    lines = [f"*Top sellers — {shop.name} ({label})*", ""]
+        return f"No sale lines found for {shop.name} {scope}."
+    lines = [f"*Top sellers — {shop.name} ({scope})*", ""]
     for i, r in enumerate(rows, 1):
         lines.append(f"{i}. {r['item_name']} — x{qty_fmt(r['q'])} ({money(r['t'])})")
     return "\n".join(lines)
@@ -499,8 +553,12 @@ def _shops_reply(shop: Shop, text: str) -> str:
 
 def _daily_summary_reply(shop: Shop, text: str) -> str:
     start, end, label = _date_range(text)
+    status = resolve_receipt_status(text)
+    scope = _sales_label(label, status)
     start_dt, end_dt = _window(start, end)
-    sales = _receipts(shop, start, end).aggregate(t=Sum("total"), c=Count("id"))
+    sales = _receipts(shop, start, end, receipt_status=status).aggregate(
+        t=Sum("total"), c=Count("id")
+    )
     expenses = Expense.objects.filter(
         shop_id=shop.pk, created_at__gte=start_dt, created_at__lt=end_dt
     ).aggregate(t=Sum("amount"))
@@ -511,7 +569,7 @@ def _daily_summary_reply(shop: Shop, text: str) -> str:
         .aggregate(t=Sum("balance"))
     )
     lines = [
-        f"*{label.capitalize()} at {shop.name}*",
+        f"*{scope.capitalize()} at {shop.name}*",
         f"Sales: *{money(sales['t'])}* ({sales['c'] or 0} receipts)",
         f"Expenses: {money(expenses['t'])}",
         f"Outstanding credit: {money(credit['t'])}",
@@ -520,10 +578,13 @@ def _daily_summary_reply(shop: Shop, text: str) -> str:
 
 
 def _help_reply(shop: Shop) -> str:
+    default = analytics_receipt_default()
     return (
         f"*What I can do for {shop.name}*\n\n"
         "*Sales & money*\n"
         "- sales today / yesterday / this week / last week / this month\n"
+        "- sales today pending / confirmed — override analytics default "
+        f"(currently *{default}*)\n"
         "- expenses today / this month\n"
         "- summary — quick snapshot of today\n"
         "- credit — outstanding customer balances\n\n"
@@ -531,7 +592,8 @@ def _help_reply(shop: Shop) -> str:
         "- stock <item> — on-hand quantity, e.g. *stock sugar*\n"
         "- price of <item>\n"
         "- low stock — items below their alert level\n"
-        "- top sellers — best movers this month\n\n"
+        "- top sellers / items sold — best movers "
+        f"(default *{default}* receipts)\n\n"
         "*Operations*\n"
         "- receipts — last 5, or *receipt <number>*\n"
         "- day status — is the shop open\n"
@@ -657,7 +719,9 @@ def _stock_movement_reply(shop: Shop, text: str) -> str:
 def items_sold_rows(shop: Shop, text: str):
     """(label, rows) for the items-sold window — shared by text + card."""
     start, end, label = _date_range(text)
-    receipt_ids = _receipts(shop, start, end).values("id")
+    status = resolve_receipt_status(text)
+    scope = _sales_label(label, status)
+    receipt_ids = _receipts(shop, start, end, receipt_status=status).values("id")
     rows = (
         ShopReceiptLine.objects.filter(receipt_id__in=receipt_ids)
         .values("item_name")
@@ -667,7 +731,7 @@ def items_sold_rows(shop: Shop, text: str):
         )
         .order_by("-q")
     )
-    return label, [r for r in rows if (r["q"] or 0) > 0]
+    return scope, [r for r in rows if (r["q"] or 0) > 0]
 
 
 ITEMS_INTENT_RE = re.compile(r"\bitems?\b", re.I)
@@ -694,9 +758,27 @@ def card_meta(shop: Shop, text: str):
     t = (text or "").strip()
     low = t.lower()
 
+    # Items-sold before the broad sales regex (which matches "sold").
+    if items_intent_matches(shop, t):
+        label, rows = items_sold_rows(shop, t)
+        return {
+            "items_sold": {
+                "label": label,
+                "items": [
+                    {
+                        "name": r["item_name"],
+                        "qty": qty_fmt(r["q"]),
+                        "total": money(r["t"]),
+                    }
+                    for r in rows
+                ],
+            }
+        }
+
     if re.search(r"\b(sale|sales|sell|selling|sold|revenue|income|till|collection|collections)\b", low):
         start, end, label = _date_range(t)
-        qs = _receipts(shop, start, end)
+        status = resolve_receipt_status(t)
+        qs = _receipts(shop, start, end, receipt_status=status)
         agg = qs.aggregate(
             total=Sum("total"), count=Count("id"),
             cash=Sum("cash_amount"), mpesa=Sum("mpesa_amount"),
@@ -704,12 +786,14 @@ def card_meta(shop: Shop, text: str):
         if not (agg["count"] or 0):
             return None
         credit = (
-            _receipts(shop, start, end, kinds=(CREDIT_KIND,))
-            .aggregate(t=Sum("total"))["t"] or 0
+            _receipts(
+                shop, start, end, kinds=(CREDIT_KIND,), receipt_status=status
+            ).aggregate(t=Sum("total"))["t"]
+            or 0
         )
         return {
             "sales": {
-                "label": label,
+                "label": _sales_label(label, status),
                 "total": money(agg["total"]),
                 "receipts": agg["count"],
                 "cash": money(agg["cash"]),
@@ -717,6 +801,7 @@ def card_meta(shop: Shop, text: str):
                 "credit": money(credit),
                 "start": start.isoformat(),
                 "end": end.isoformat(),
+                "receipt_status": status,
             }
         }
 
@@ -780,8 +865,9 @@ def card_meta(shop: Shop, text: str):
 
     if re.search(r"\b(summary|report|overview|snapshot|today's|todays|performance)\b", low):
         start, end, label = _date_range(t)
+        status = resolve_receipt_status(t)
         start_dt, end_dt = _window(start, end)
-        sales = _receipts(shop, start, end).aggregate(
+        sales = _receipts(shop, start, end, receipt_status=status).aggregate(
             t=Sum("total"), c=Count("id")
         )
         expenses = Expense.objects.filter(
@@ -797,7 +883,7 @@ def card_meta(shop: Shop, text: str):
         )
         return {
             "summary": {
-                "label": label,
+                "label": _sales_label(label, status),
                 "sales": money(sales["t"]),
                 "receipts": sales["c"] or 0,
                 "expenses": money(expenses["t"]),
@@ -805,21 +891,6 @@ def card_meta(shop: Shop, text: str):
             }
         }
 
-    if items_intent_matches(shop, t):
-        label, rows = items_sold_rows(shop, t)
-        return {
-            "items_sold": {
-                "label": label,
-                "items": [
-                    {
-                        "name": r["item_name"],
-                        "qty": qty_fmt(r["q"]),
-                        "total": money(r["t"]),
-                    }
-                    for r in rows
-                ],
-            }
-        }
     return None
 
 
@@ -838,11 +909,12 @@ def _items_sold_reply(shop: Shop, text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _all_receipts(start, end, kinds=(SALE_KIND,)):
+def _all_receipts(start, end, kinds=(SALE_KIND,), receipt_status=None):
     start_dt, end_dt = _window(start, end)
+    statuses = _analytics_statuses(receipt_status or analytics_receipt_default())
     return ShopReceipt.objects.filter(
         kind__in=kinds,
-        status__in=COUNTED_STATUSES,
+        status__in=statuses,
         created_at__gte=start_dt,
         created_at__lt=end_dt,
     )
@@ -853,6 +925,8 @@ def reply_for_all(text: str) -> str:
     t = (text or "").strip()
     low = t.lower()
     start, end, label = _date_range(t)
+    status = resolve_receipt_status(t)
+    scope = _sales_label(label, status)
     start_dt, end_dt = _window(start, end)
     shops = {s.pk: s.name for s in Shop.objects.filter(
         is_suspended=False, is_hidden=False
@@ -924,7 +998,7 @@ def reply_for_all(text: str) -> str:
         return "\n".join(lines)
 
     if re.search(r"\b(summary|report|overview|snapshot|performance)\b", low):
-        sales = _all_receipts(start, end).aggregate(
+        sales = _all_receipts(start, end, receipt_status=status).aggregate(
             t=Sum("total"), c=Count("id")
         )
         expenses = Expense.objects.filter(
@@ -937,13 +1011,13 @@ def reply_for_all(text: str) -> str:
             .aggregate(t=Sum("balance"))
         )
         per_shop = (
-            _all_receipts(start, end)
+            _all_receipts(start, end, receipt_status=status)
             .values("shop_id")
             .annotate(t=Sum("total"))
             .order_by("-t")
         )
         lines = [
-            f"*{label.capitalize()} at ALL SHOPS*",
+            f"*{scope.capitalize()} at ALL SHOPS*",
             f"Sales: *{money(sales['t'])}* ({sales['c'] or 0} receipts)",
             f"Expenses: {money(expenses['t'])}",
             f"Outstanding credit: {money(credit['t'])}",
@@ -951,11 +1025,11 @@ def reply_for_all(text: str) -> str:
         ]
         for r in per_shop:
             lines.append(f"- {shops.get(r['shop_id'], '?')}: {money(r['t'])}")
-        lines.append(f"%%items|{start.isoformat()}|{end.isoformat()}%%")
+        lines.append(f"%%items|{start.isoformat()}|{end.isoformat()}|{status}%%")
         return "\n".join(lines)
 
     if items_intent_matches(None, t):
-        receipt_ids = _all_receipts(start, end).values("id")
+        receipt_ids = _all_receipts(start, end, receipt_status=status).values("id")
         rows = list(
             ShopReceiptLine.objects.filter(receipt_id__in=receipt_ids)
             .values("item_name")
@@ -967,9 +1041,9 @@ def reply_for_all(text: str) -> str:
         )
         rows = [r for r in rows if (r["q"] or 0) > 0]
         if not rows:
-            return f"No items sold across all shops {label}."
+            return f"No items sold across all shops {scope}."
         lines = [
-            f"*Items sold — ALL SHOPS ({label})* — {len(rows)} items",
+            f"*Items sold — ALL SHOPS ({scope})* — {len(rows)} items",
             "",
         ]
         for i, r in enumerate(rows[:80], 1):
@@ -981,34 +1055,36 @@ def reply_for_all(text: str) -> str:
         return "\n".join(lines)
 
     if re.search(r"\b(sale|sales|sell|sold|revenue|income)\b", low):
-        agg = _all_receipts(start, end).aggregate(
+        agg = _all_receipts(start, end, receipt_status=status).aggregate(
             total=Sum("total"), count=Count("id"),
             cash=Sum("cash_amount"), mpesa=Sum("mpesa_amount"),
         )
         count = agg["count"] or 0
         if not count:
-            return f"No sales recorded across all shops {label}."
+            return f"No sales recorded across all shops {scope}."
         per_shop = (
-            _all_receipts(start, end)
+            _all_receipts(start, end, receipt_status=status)
             .values("shop_id")
             .annotate(t=Sum("total"), c=Count("id"))
             .order_by("-t")
         )
         lines = [
-            f"*Sales — ALL SHOPS ({label})*",
+            f"*Sales — ALL SHOPS ({scope})*",
             f"Total: *{money(agg['total'])}* across {count} receipts",
             f"Cash {money(agg['cash'])}  |  M-Pesa {money(agg['mpesa'])}",
             "",
         ]
         for r in per_shop:
             lines.append(f"- {shops.get(r['shop_id'], '?')}: {money(r['t'])}")
-        lines.append(f"%%items|{start.isoformat()}|{end.isoformat()}%%")
+        lines.append(f"%%items|{start.isoformat()}|{end.isoformat()}|{status}%%")
         return "\n".join(lines)
 
+    default = analytics_receipt_default()
     return (
         "*All-shops view*\n\n"
         "Ask me about every shop combined:\n"
         "- sales today / this week / this month\n"
+        f"- sales today pending / confirmed (default *{default}*)\n"
         "- credits — outstanding balances per shop\n"
         "- expenses today / this month\n"
         "- stock movement\n"
@@ -1028,6 +1104,8 @@ def card_for_all(text: str):
     t = (text or "").strip()
     low = t.lower()
     start, end, label = _date_range(t)
+    status = resolve_receipt_status(t)
+    scope = _sales_label(label, status)
     start_dt, end_dt = _window(start, end)
 
     def _shop_names(qs=None, field="shop_id"):
@@ -1141,7 +1219,7 @@ def card_for_all(text: str):
         return {"movement": {"label": label, "groups": groups}}
 
     if re.search(r"\b(summary|report|overview|snapshot|performance)\b", low):
-        sales = _all_receipts(start, end).aggregate(
+        sales = _all_receipts(start, end, receipt_status=status).aggregate(
             t=Sum("total"), c=Count("id")
         )
         expenses = Expense.objects.filter(
@@ -1157,7 +1235,7 @@ def card_for_all(text: str):
         )
         return {
             "summary": {
-                "label": label,
+                "label": scope,
                 "sales": money(sales["t"]),
                 "receipts": sales["c"] or 0,
                 "expenses": money(expenses["t"]),
@@ -1166,7 +1244,7 @@ def card_for_all(text: str):
         }
 
     if items_intent_matches(None, t):
-        receipt_ids = _all_receipts(start, end).values("id")
+        receipt_ids = _all_receipts(start, end, receipt_status=status).values("id")
         rows = [
             r
             for r in (
@@ -1182,7 +1260,7 @@ def card_for_all(text: str):
         ]
         return {
             "items_sold": {
-                "label": label,
+                "label": scope,
                 "items": [
                     {
                         "name": r["item_name"],
@@ -1195,19 +1273,21 @@ def card_for_all(text: str):
         }
 
     if re.search(r"\b(sale|sales|sell|sold|revenue|income)\b", low):
-        agg = _all_receipts(start, end).aggregate(
+        agg = _all_receipts(start, end, receipt_status=status).aggregate(
             total=Sum("total"), count=Count("id"),
             cash=Sum("cash_amount"), mpesa=Sum("mpesa_amount"),
         )
         if not (agg["count"] or 0):
             return None
         credit = (
-            _all_receipts(start, end, kinds=(CREDIT_KIND,))
-            .aggregate(t=Sum("total"))["t"] or 0
+            _all_receipts(
+                start, end, kinds=(CREDIT_KIND,), receipt_status=status
+            ).aggregate(t=Sum("total"))["t"]
+            or 0
         )
         return {
             "sales": {
-                "label": label,
+                "label": scope,
                 "total": money(agg["total"]),
                 "receipts": agg["count"],
                 "cash": money(agg["cash"]),
@@ -1215,6 +1295,7 @@ def card_for_all(text: str):
                 "credit": money(credit),
                 "start": start.isoformat(),
                 "end": end.isoformat(),
+                "receipt_status": status,
             }
         }
     return None
@@ -1245,6 +1326,9 @@ def reply_for(shop: Shop, text: str) -> str:
         return _top_sellers_reply(shop, t)
     if re.search(r"\b(receipt|receipts|invoice)\b", low):
         return _receipts_reply(shop, t)
+    # Items-sold before the broad sales regex (which matches "sold").
+    if items_intent_matches(shop, t):
+        return _items_sold_reply(shop, t)
     if re.search(r"\b(sale|sales|sell|selling|sold|revenue|income|till|collection|collections)\b", low):
         return _sales_reply(shop, t)
     if re.search(r"\b(expense|expenses|spent|spending|costs?)\b", low):
@@ -1259,8 +1343,6 @@ def reply_for(shop: Shop, text: str) -> str:
         return _day_status_reply(shop, t)
     if re.search(r"\b(shops|branches|stores|locations)\b", low):
         return _shops_reply(shop, t)
-    if items_intent_matches(shop, t):
-        return _items_sold_reply(shop, t)
     if re.search(
         r"\b(stock|price|bei|have|many|much|left|remaining|available|availability)\b",
         low,
@@ -1273,8 +1355,12 @@ def reply_for(shop: Shop, text: str) -> str:
 
 BOT_SUGGESTIONS = [
     "Sales",
+    "Items",
     "Credits",
     "Expenses",
     "Stock movement",
     "Summary",
 ]
+
+# Topics whose period picker shows pending/confirmed receipt scope.
+RECEIPT_STATUS_TOPICS = frozenset({"sales", "items", "summary"})

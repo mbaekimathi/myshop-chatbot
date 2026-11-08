@@ -2143,6 +2143,51 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
   gap: 0.25rem;
 }
 
+.wa-period__scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.1rem;
+  padding-left: 0.35rem;
+  border-left: 1px solid var(--wa-line);
+}
+
+.wa-period__scope-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--wa-muted);
+  white-space: nowrap;
+}
+
+.wa-period__scope select {
+  color-scheme: inherit;
+  border: 1px solid var(--wa-line);
+  border-radius: 999px;
+  background: var(--wa-panel-2);
+  color: var(--wa-ink);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 0.25rem 1.6rem 0.25rem 0.65rem;
+  max-width: 8.5rem;
+  cursor: pointer;
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--wa-muted) 50%),
+    linear-gradient(135deg, var(--wa-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 0.85rem) 55%,
+    calc(100% - 0.55rem) 55%;
+  background-size: 0.3rem 0.3rem, 0.3rem 0.3rem;
+  background-repeat: no-repeat;
+}
+
+.wa-period__scope select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--wa-send) 45%, transparent);
+  outline-offset: 0;
+  border-color: var(--wa-send);
+}
+
 .wa-period__fields {
   display: inline-flex;
   align-items: center;

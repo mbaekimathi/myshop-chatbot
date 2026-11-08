@@ -288,7 +288,7 @@
       // freshly deployed version is picked up automatically on login.
       if ("serviceWorker" in navigator) {
         navigator.serviceWorker
-          .register("/static/sw.js", { scope: "/" })
+          .register("/static/sw.js?v=2026-11-08.2", { scope: "/" })
           .then(function (reg) {
             reg.update();
             reg.addEventListener("updatefound", function () {

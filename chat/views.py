@@ -184,7 +184,9 @@ def app_icon(request, size: int):
         png = icon_ops.render_app_icon(size, rounded=rounded)
         cache.set(cache_key, png, 3600)
     resp = HttpResponse(png, content_type="image/png")
-    resp["Cache-Control"] = "public, max-age=3600"
+    # Short browser cache — installed PWAs still need uninstall/reinstall
+    # to refresh the home-screen icon; this helps tabs + new installs.
+    resp["Cache-Control"] = "public, max-age=300"
     return resp
 
 
@@ -194,35 +196,36 @@ def manifest(request):
     company name set in MY-SHOP settings. Unauthenticated on purpose: manifest
     fetches carry no credentials."""
     name = services.app_name()
+    bust = icon_ops.icon_cache_bust()
     icon_192 = reverse("chat:app_icon", kwargs={"size": 192})
     icon_512 = reverse("chat:app_icon", kwargs={"size": 512})
     icons = [
         {
-            "src": f"{icon_192}?rounded=1",
+            "src": f"{icon_192}?rounded=1&v={bust}",
             "sizes": "192x192",
             "type": "image/png",
             "purpose": "any",
         },
         {
-            "src": icon_192,
+            "src": f"{icon_192}?v={bust}",
             "sizes": "192x192",
             "type": "image/png",
             "purpose": "maskable",
         },
         {
-            "src": f"{icon_512}?rounded=1",
+            "src": f"{icon_512}?rounded=1&v={bust}",
             "sizes": "512x512",
             "type": "image/png",
             "purpose": "any",
         },
         {
-            "src": icon_512,
+            "src": f"{icon_512}?v={bust}",
             "sizes": "512x512",
             "type": "image/png",
             "purpose": "maskable",
         },
     ]
-    return JsonResponse(
+    resp = JsonResponse(
         {
             "name": name,
             "short_name": name,
@@ -236,6 +239,8 @@ def manifest(request):
             "icons": icons,
         }
     )
+    resp["Cache-Control"] = "no-cache"
+    return resp
 
 
 def login_view(request):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 from functools import lru_cache
 from pathlib import Path
@@ -9,6 +10,9 @@ from pathlib import Path
 from django.conf import settings
 
 from . import services
+
+# Bump when the drawn icon design changes so manifests/favicons bust cache.
+ICON_ASSET_VERSION = "2026-11-08.2"
 
 # Teal wash matching the chat --wa-* tokens (flat, no gloss).
 _BG_TOP = (37, 211, 102)       # --wa-green #25d366
@@ -27,6 +31,12 @@ def icon_label() -> str:
     if not name or name.upper().replace("-", " ") in {"MY SHOP", "MYSHOP"}:
         return "MY SHOP"
     return name
+
+
+def icon_cache_bust() -> str:
+    """Query token that changes with design version + company label."""
+    raw = f"{ICON_ASSET_VERSION}:{icon_label()}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:10]
 
 
 def _font_paths() -> list[Path]:

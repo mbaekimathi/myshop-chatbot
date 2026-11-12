@@ -702,6 +702,26 @@ html[data-theme="dark"] .comms {
   max-width: 100%;
 }
 
+/* Cart / stock / contacts overlays sit above the footer row */
+.comms.wa-app:has(> .app-footer) .wa-stock,
+.comms.wa-app:has(> .app-footer) .wa-app__contacts,
+.comms.wa-app:has(> .app-footer) .wa-group-settings {
+  bottom: var(--wa-app-footer-h, 2.35rem);
+}
+
+/* Hide footer while cart/overlays need the full height (all breakpoints) */
+.wa-app:has(.wa-stock:not([hidden])) > .app-footer,
+.wa-app:has(.wa-app__contacts:not([hidden])) > .app-footer,
+.wa-app:has(.wa-group-settings:not([hidden])) > .app-footer {
+  display: none;
+}
+
+.wa-app:has(.wa-stock:not([hidden])),
+.wa-app:has(.wa-app__contacts:not([hidden])),
+.wa-app:has(.wa-group-settings:not([hidden])) {
+  --wa-app-footer-h: 0px;
+}
+
 .wa-app__shell {
   display: grid;
   grid-template-columns: minmax(0, var(--wa-list)) minmax(0, 1fr);
@@ -1412,7 +1432,7 @@ html[data-theme="dark"] .comms {
   .wa-app__composer .comms-attach-btn,
   .wa-app__composer .comms-send-fab { width: 2.75rem; height: 2.75rem; }
 
-  /* Compact footer; hide when composer / overlays need the bottom edge */
+  /* Compact footer; hide when composer needs the bottom edge */
   .app-footer { font-size: 0.68rem; }
   .app-footer__inner {
     gap: 0.15rem 0.55rem;
@@ -1423,9 +1443,14 @@ html[data-theme="dark"] .comms {
   }
   .wa-app.is-chat-open > .app-footer,
   .wa-app.is-kb > .app-footer,
-  .wa-app:has(.wa-stock:not([hidden])) > .app-footer,
   .all-app > .app-footer {
     display: none;
+  }
+
+  .comms.wa-app:has(> .app-footer) .wa-stock,
+  .comms.wa-app:has(> .app-footer) .wa-app__contacts,
+  .comms.wa-app:has(> .app-footer) .wa-group-settings {
+    bottom: var(--wa-app-footer-h, 2.1rem);
   }
 
   .auth-main {

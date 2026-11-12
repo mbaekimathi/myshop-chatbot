@@ -216,6 +216,28 @@ def employee_allocated_to_shop(profile_id: int, shop_id: int) -> bool:
         return cur.fetchone() is not None
 
 
+def employee_assigned_shop_ids(profile_id: int) -> list[int]:
+    """Shop ids allocated to this employee profile (active shops only)."""
+    if not profile_id:
+        return []
+    from django.db import connection
+
+    with connection.cursor() as cur:
+        cur.execute(
+            "SELECT shop_id FROM employees_employeeprofile_assigned_shops "
+            "WHERE employeeprofile_id=%s",
+            [profile_id],
+        )
+        ids = [int(r[0]) for r in cur.fetchall()]
+    if not ids:
+        return []
+    return list(
+        Shop.objects.filter(pk__in=ids, is_hidden=False, is_suspended=False)
+        .order_by("name")
+        .values_list("pk", flat=True)
+    )
+
+
 def login_shop(request, shop: Shop) -> None:
     request.session[SESSION_SHOP_KEY] = shop.pk
 

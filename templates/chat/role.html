@@ -29,15 +29,42 @@
     </div>
   </header>
 
-  <div class="role-shell">
-    <div class="role-empty">
-      <span class="role-empty__icon" aria-hidden="true">
-        <i data-lucide="{{ role_icon }}"></i>
-      </span>
-      <h1>{{ role_label }}</h1>
-      <p>Your workspace is ready — tools for this role will appear here soon.</p>
-    </div>
+  <div class="wa-app__shell">
+    <aside class="wa-app__list role-dash">
+      <div class="wa-app__list-tools">
+        <span class="sm-dash__title">
+          <i data-lucide="layout-dashboard" aria-hidden="true"></i>
+          Dashboard
+        </span>
+      </div>
+      <div class="wa-app__chats" role="list">
+        {% for shop in shops %}
+        <form method="post" action="{% url 'chat:pick_shop' %}">
+          {% csrf_token %}
+          <input type="hidden" name="shop_id" value="{{ shop.id }}">
+          <button type="submit" class="wa-chat" title="Open {{ shop.name }}">
+            <span class="comms-avatar" data-tone="{{ shop.tone }}" aria-hidden="true">{{ shop.initials }}</span>
+            <span class="wa-chat__main">
+              <span class="wa-chat__top"><strong>{{ shop.name }}</strong></span>
+              <span class="wa-chat__preview">{{ shop.location|default:"Shop chat &amp; tools" }}</span>
+            </span>
+            <i data-lucide="chevron-right" aria-hidden="true"></i>
+          </button>
+        </form>
+        {% empty %}
+        <div class="role-empty role-empty--inline">
+          <span class="role-empty__icon" aria-hidden="true">
+            <i data-lucide="{{ role_icon }}"></i>
+          </span>
+          <h1>{{ role_label }}</h1>
+          <p>No shops are allocated to your profile yet. Ask an admin to assign you, then refresh.</p>
+        </div>
+        {% endfor %}
+      </div>
+    </aside>
   </div>
+
+  {% include "chat/partials/app_footer.html" %}
 </section>
 {% endblock %}
 

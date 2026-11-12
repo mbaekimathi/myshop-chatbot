@@ -185,7 +185,7 @@ class AuthTests(ChatTestCase):
 
 class EmployeeRoleLoginTests(ChatTestCase):
     """Any active employee may sign in; admins/IT get /all/, others get
-    an empty role workspace."""
+    a WhatsApp-style role dashboard."""
 
     EMPLOYEE_DDL = (
         "CREATE TABLE IF NOT EXISTS employees_employeeprofile ("
@@ -252,7 +252,8 @@ class EmployeeRoleLoginTests(ChatTestCase):
         page = self.client.get(resp["Location"])
         self.assertEqual(page.status_code, 200)
         self.assertContains(page, "Shop Cashier")
-        self.assertContains(page, "appear here soon")
+        self.assertContains(page, "Dashboard")
+        self.assertContains(page, "No shops are allocated")
 
     def test_it_support_lands_on_all_shops(self):
         resp = self.employee_login("200002", "pass-i")
@@ -2351,12 +2352,15 @@ class StoreManagerStockTests(ChatTestCase):
         )
         page = self.client.get(resp["Location"])
         self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "Dashboard")
         self.assertContains(page, "Store Stock In")
         self.assertContains(page, "Store Assistant")
-        self.assertContains(page, "wa-app__stage")
+        self.assertContains(page, "Store Report")
         self.assertContains(page, "data-sm-feed")
+        self.assertContains(page, 'data-sm-open="feed"')
         self.assertContains(page, 'data-sm-open="in"')
         self.assertContains(page, 'data-sm-open="out"')
+        self.assertContains(page, 'data-sm-open="report"')
         self.assertContains(page, "Type item name")
         self.assertContains(page, 'data-sm-add')
         self.assertContains(page, "wa-app__contacts-head")

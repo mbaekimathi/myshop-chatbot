@@ -21,6 +21,7 @@
   var home = root.querySelector("[data-sm-home]");
   var feedEl = root.querySelector("[data-sm-feed]");
   var feedEmpty = root.querySelector("[data-sm-feed-empty]");
+  var feedPanel = root.querySelector('[data-sm-panel="feed"]');
   var formPanel = root.querySelector('[data-sm-panel="form"]');
   var reportPanel = root.querySelector('[data-sm-panel="report"]');
   var formTitle = root.querySelector("[data-sm-form-title]");
@@ -79,9 +80,13 @@
   }
 
   function show(panel) {
-    formPanel.hidden = panel !== "form";
-    reportPanel.hidden = panel !== "report";
+    if (home) home.hidden = !!panel;
+    if (feedPanel) feedPanel.hidden = panel !== "feed";
+    if (formPanel) formPanel.hidden = panel !== "form";
+    if (reportPanel) reportPanel.hidden = panel !== "report";
     root.classList.toggle("is-stock-open", !!panel);
+    root.classList.toggle("is-chat-open", panel === "feed");
+    if (panel === "feed") loadFeed();
     icons();
   }
 
@@ -598,6 +603,10 @@
   root.querySelectorAll("[data-sm-open]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       var which = btn.getAttribute("data-sm-open");
+      if (which === "feed") {
+        show("feed");
+        return;
+      }
       if (which === "report") {
         show("report");
         return;

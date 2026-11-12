@@ -31,6 +31,7 @@ from .auth import (
     current_employee,
     current_shop,
     employee_allocated_to_shop,
+    employee_assigned_shop_ids,
     login_employee,
     login_shop,
     logout_shop,
@@ -401,6 +402,8 @@ def pick_shop(request):
         return redirect("chat:login")
 
     if str(request.POST.get("shop_id")) == "all":
+        if not can_view_all_shops(employee["role"]):
+            return redirect(role_home_url(employee["role"]))
         request.session["chatbot_all_shops"] = True
         request.session.pop("chatbot_shop_id", None)
         return redirect("chat:all_shops")
@@ -409,7 +412,9 @@ def pick_shop(request):
     except (TypeError, ValueError):
         shop = None
     if shop is None:
-        return redirect("chat:all_shops")
+        if can_view_all_shops(employee["role"]):
+            return redirect("chat:all_shops")
+        return redirect(role_home_url(employee["role"]))
     request.session.pop("chatbot_all_shops", None)
     login_shop(request, shop)
     fab = (request.POST.get("fab") or "").strip()
@@ -467,6 +472,23 @@ def role_home_view(request, slug):
             }
         )
         return render(request, "chat/rider.html", context)
+
+    # Shop-floor roles get a WhatsApp-style list of allocated shops.
+    shop_ids = employee_assigned_shop_ids(employee["id"])
+    shops = []
+    for shop in services.active_shops():
+        if shop.pk not in shop_ids:
+            continue
+        shops.append(
+            {
+                "id": shop.pk,
+                "name": shop.name,
+                "location": shop.location,
+                "initials": services.initials(shop.name),
+                "tone": services.avatar_tone(shop.pk),
+            }
+        )
+    context["shops"] = shops
     return render(request, "chat/role.html", context)
 
 

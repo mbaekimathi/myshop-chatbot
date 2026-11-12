@@ -6,7 +6,7 @@
 
 {% block body %}
 <section
-  class="comms wa-app sm-app is-chat-open"
+  class="comms wa-app sm-app"
   data-sm-app
   data-items-url="{{ items_url }}"
   data-employees-url="{{ employees_url }}"
@@ -40,36 +40,70 @@
     </div>
   </header>
 
+  {# WhatsApp-style dashboard — chat rows link into each store tool. #}
   <div class="wa-app__shell" data-sm-home>
-    <div class="wa-app__chat">
-      <div class="wa-app__thread">
-        <header class="wa-app__chat-head">
+    <aside class="wa-app__list sm-dash">
+      <div class="wa-app__list-tools">
+        <span class="sm-dash__title">
+          <i data-lucide="layout-dashboard" aria-hidden="true"></i>
+          Dashboard
+        </span>
+      </div>
+      <div class="wa-app__chats" role="list">
+        <button type="button" class="wa-chat" data-sm-open="feed" title="Store Assistant">
           <span class="comms-avatar" data-tone="1" aria-hidden="true">
             <i data-lucide="warehouse"></i>
           </span>
-          <div class="wa-app__chat-who">
-            <strong>Store Assistant</strong>
-            <span>Central store · stock in &amp; out</span>
-          </div>
-        </header>
+          <span class="wa-chat__main">
+            <span class="wa-chat__top"><strong>Store Assistant</strong></span>
+            <span class="wa-chat__preview">Activity feed · stock in &amp; out</span>
+          </span>
+          <i data-lucide="chevron-right" aria-hidden="true"></i>
+        </button>
+        <button type="button" class="wa-chat" data-sm-open="in" title="Store Stock In">
+          <span class="comms-avatar sm-dash__ico sm-dash__ico--in" aria-hidden="true">
+            <i data-lucide="package-plus"></i>
+          </span>
+          <span class="wa-chat__main">
+            <span class="wa-chat__top"><strong>Store Stock In</strong></span>
+            <span class="wa-chat__preview">Receive items into central store</span>
+          </span>
+          <i data-lucide="chevron-right" aria-hidden="true"></i>
+        </button>
+        <button type="button" class="wa-chat" data-sm-open="out" title="Store Stock Out">
+          <span class="comms-avatar sm-dash__ico sm-dash__ico--out" aria-hidden="true">
+            <i data-lucide="package-minus"></i>
+          </span>
+          <span class="wa-chat__main">
+            <span class="wa-chat__top"><strong>Store Stock Out</strong></span>
+            <span class="wa-chat__preview">Issue items from central store</span>
+          </span>
+          <i data-lucide="chevron-right" aria-hidden="true"></i>
+        </button>
+        <button type="button" class="wa-chat" data-sm-open="report" title="Store Report">
+          <span class="comms-avatar sm-dash__ico sm-dash__ico--report" aria-hidden="true">
+            <i data-lucide="clipboard-list"></i>
+          </span>
+          <span class="wa-chat__main">
+            <span class="wa-chat__top"><strong>Store Report</strong></span>
+            <span class="wa-chat__preview">Movement history and balances</span>
+          </span>
+          <i data-lucide="chevron-right" aria-hidden="true"></i>
+        </button>
+      </div>
+    </aside>
+  </div>
 
-        <div class="wa-app__stage sm-stage" data-sm-feed>
-          <div class="wa-sys" data-sm-feed-empty>
-            <span>Store stock in and stock out appear here like chat messages.</span>
-          </div>
-        </div>
-
-        <div class="wa-fabs" data-sm-fabs>
-          <button type="button" class="wa-fab" data-sm-open="in" title="Store Stock In" aria-label="Store Stock In">
-            <i data-lucide="package-plus" aria-hidden="true"></i>
-          </button>
-          <button type="button" class="wa-fab" data-sm-open="out" title="Store Stock Out" aria-label="Store Stock Out">
-            <i data-lucide="package-minus" aria-hidden="true"></i>
-          </button>
-          <button type="button" class="wa-fab" data-sm-open="report" title="Store Report" aria-label="Store Report">
-            <i data-lucide="clipboard-list" aria-hidden="true"></i>
-          </button>
-        </div>
+  <div class="wa-stock sm-feed-panel" data-sm-panel="feed" hidden>
+    <div class="wa-app__contacts-head">
+      <button type="button" class="comms-icon-btn" data-sm-back aria-label="Back">
+        <i data-lucide="arrow-left" aria-hidden="true"></i>
+      </button>
+      <strong>Store Assistant</strong>
+    </div>
+    <div class="wa-app__stage sm-stage" data-sm-feed>
+      <div class="wa-sys" data-sm-feed-empty>
+        <span>Store stock in and stock out appear here like chat messages.</span>
       </div>
     </div>
   </div>
@@ -239,9 +273,11 @@
       </button>
     </div>
   </div>
+
+  {% include "chat/partials/app_footer.html" %}
 </section>
 {% endblock %}
 
 {% block extra_js %}
-<script defer src="{% static 'js/store-manager.js' %}?v=6"></script>
+<script defer src="{% static 'js/store-manager.js' %}?v=7"></script>
 {% endblock %}

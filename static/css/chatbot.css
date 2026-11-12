@@ -566,7 +566,7 @@ html[data-theme="dark"] .comms {
   height: 100vh;
   height: var(--wa-vvh, 100dvh);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   position: relative;
   overflow: hidden;
   background: var(--wa-app-bg);
@@ -623,6 +623,84 @@ html[data-theme="dark"] .comms {
 
 .wa-app__bar-actions .comms-icon-btn,
 .wa-app__brand > .comms-icon-btn { color: #fff; }
+
+/* App footer — mirrors MY-SHOP workspace_footer */
+.app-footer {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--wa-line, rgba(0, 0, 0, 0.08));
+  background: var(--wa-panel, #fff);
+  color: var(--wa-muted, #667781);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.app-footer__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.2rem 0.85rem;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0.4rem 0.85rem;
+  padding-left: max(0.85rem, env(safe-area-inset-left));
+  padding-right: max(0.85rem, env(safe-area-inset-right));
+  padding-bottom: max(0.4rem, env(safe-area-inset-bottom));
+}
+
+.app-footer p {
+  margin: 0;
+  min-width: 0;
+}
+
+.app-footer__inner > p:first-child {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-footer__brand {
+  font-weight: 700;
+  color: var(--wa-ink, #111b21);
+}
+
+.app-footer__sep {
+  margin-inline: 0.3rem;
+  opacity: 0.55;
+}
+
+.app-footer__meta {
+  flex: 0 0 auto;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+.auth-main > .app-footer {
+  width: min(24rem, 100%);
+  max-width: 100%;
+  margin-top: auto;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.auth-main > .app-footer .app-footer__inner {
+  padding-left: 0;
+  padding-right: 0;
+  padding-bottom: max(0.35rem, env(safe-area-inset-bottom));
+  justify-content: center;
+  gap: 0.35rem 0.85rem;
+  text-align: center;
+}
+
+.auth-main > .app-footer .app-footer__inner > p:first-child {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
 
 .wa-app__shell {
   display: grid;
@@ -1304,8 +1382,22 @@ html[data-theme="dark"] .comms {
 
 @media (max-width: 639px) {
   .comms.wa-app { --wa-list: 100%; --wa-chat-max: 100%; }
-  .wa-app__bar { padding-top: max(0.4rem, env(safe-area-inset-top)); }
+  .wa-app__bar {
+    gap: 0.35rem;
+    padding: 0.4rem 0.55rem;
+    padding-top: max(0.4rem, env(safe-area-inset-top));
+    padding-left: max(0.55rem, env(safe-area-inset-left));
+    padding-right: max(0.55rem, env(safe-area-inset-right));
+  }
+  .wa-app__brand { gap: 0.4rem; min-width: 0; flex: 1 1 auto; }
   .wa-app__brand span { display: none; }
+  .wa-app__brand strong { font-size: 0.88rem; }
+  .wa-app__logo { width: 2.05rem; height: 2.05rem; font-size: 0.72rem; }
+  .wa-app__bar-actions { gap: 0.1rem; }
+  .wa-app__bar-actions .comms-icon-btn {
+    width: 2.35rem;
+    height: 2.35rem;
+  }
   .wa-app__shell { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr); }
   .wa-app__chat { display: none; }
   .wa-app.is-chat-open .wa-app__list { display: none; }
@@ -1319,6 +1411,32 @@ html[data-theme="dark"] .comms {
   .wa-app__composer .comms-icon-btn,
   .wa-app__composer .comms-attach-btn,
   .wa-app__composer .comms-send-fab { width: 2.75rem; height: 2.75rem; }
+
+  /* Compact footer; hide when composer / overlays need the bottom edge */
+  .app-footer { font-size: 0.68rem; }
+  .app-footer__inner {
+    gap: 0.15rem 0.55rem;
+    padding: 0.32rem 0.65rem;
+    padding-left: max(0.65rem, env(safe-area-inset-left));
+    padding-right: max(0.65rem, env(safe-area-inset-right));
+    padding-bottom: max(0.32rem, env(safe-area-inset-bottom));
+  }
+  .wa-app.is-chat-open > .app-footer,
+  .wa-app.is-kb > .app-footer,
+  .wa-app:has(.wa-stock:not([hidden])) > .app-footer,
+  .all-app > .app-footer {
+    display: none;
+  }
+
+  .auth-main {
+    padding: 1rem 0.85rem max(0.75rem, env(safe-area-inset-bottom));
+  }
+  .auth-main > .app-footer .app-footer__inner {
+    flex-direction: column;
+    align-items: center;
+    gap: 0.1rem;
+    padding-bottom: 0;
+  }
 }
 
 @media (min-width: 640px) and (max-width: 1199px) {
@@ -4674,6 +4792,30 @@ a.wa-fab { text-decoration: none; }
     radial-gradient(120% 80% at 0% -10%, color-mix(in srgb, var(--wa-send) 14%, transparent), transparent 55%),
     var(--wa-app-bg);
 }
+.role-app .wa-app__shell {
+  grid-template-columns: 1fr;
+}
+.role-app .wa-app__list {
+  display: flex;
+  width: 100%;
+  max-width: none;
+  border-right: 0;
+}
+.role-app .wa-chat {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.role-app .wa-chat > .lucide {
+  width: 1rem;
+  height: 1rem;
+  color: var(--wa-muted);
+  flex: 0 0 auto;
+}
 .role-shell {
   flex: 1 1 auto;
   min-height: 0;
@@ -4695,6 +4837,12 @@ a.wa-fab { text-decoration: none; }
   border: 1px solid var(--wa-line);
   background: color-mix(in srgb, var(--wa-panel) 94%, transparent);
   box-shadow: 0 10px 28px rgba(11, 20, 26, 0.08);
+}
+.role-empty--inline {
+  margin: 1rem;
+  width: auto;
+  max-width: 26rem;
+  box-shadow: none;
 }
 .role-empty__icon {
   width: 3.4rem;
@@ -4720,12 +4868,67 @@ a.wa-fab { text-decoration: none; }
   max-width: 22rem;
 }
 
-/* ---- Store Manager workspace (WhatsApp chat thread) ---- */
+/* ---- Store Manager workspace (WhatsApp dashboard + tools) ---- */
 .sm-app .wa-app__shell {
   grid-template-columns: 1fr;
 }
-.sm-app .wa-app__chat {
+.sm-app .wa-app__list {
   display: flex;
+  width: 100%;
+  max-width: none;
+  border-right: 0;
+}
+.sm-dash__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--wa-muted);
+}
+.sm-dash__title .lucide { width: 0.95rem; height: 0.95rem; }
+.sm-app .wa-chat {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.sm-app .wa-chat > .lucide {
+  width: 1rem;
+  height: 1rem;
+  color: var(--wa-muted);
+  flex: 0 0 auto;
+}
+.sm-dash__ico {
+  display: grid !important;
+  place-items: center;
+  background: color-mix(in srgb, var(--wa-send) 14%, var(--wa-panel));
+  color: var(--wa-send);
+}
+.sm-dash__ico .lucide { width: 1.1rem; height: 1.1rem; }
+.sm-dash__ico--out {
+  background: color-mix(in srgb, #c45c26 16%, var(--wa-panel));
+  color: #c45c26;
+}
+.sm-dash__ico--report {
+  background: color-mix(in srgb, #2f6fed 14%, var(--wa-panel));
+  color: #2f6fed;
+}
+.sm-feed-panel {
+  width: 100%;
+  border-right: 0;
+}
+.sm-feed-panel .sm-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
 }
 .sm-app .wa-app__chat-head .comms-avatar {
   display: grid;
@@ -4734,20 +4937,6 @@ a.wa-fab { text-decoration: none; }
 .sm-app .wa-app__chat-head .comms-avatar .lucide {
   width: 1.15rem;
   height: 1.15rem;
-}
-.sm-app .sm-stage {
-  padding-bottom: calc(5.5rem + env(safe-area-inset-bottom));
-}
-.sm-app .wa-fabs {
-  bottom: calc(1rem + env(safe-area-inset-bottom));
-}
-.sm-app .wa-fab[data-sm-open="out"] {
-  background: #c45c26;
-  box-shadow: 0 4px 12px rgba(196, 92, 38, 0.4);
-}
-.sm-app .wa-fab[data-sm-open="report"] {
-  background: #2f6fed;
-  box-shadow: 0 4px 12px rgba(47, 111, 237, 0.35);
 }
 .sm-app .wa-card__head--out { color: #c45c26; }
 html[data-theme="dark"] .sm-app .wa-card__head--out { color: #f0a57a; }

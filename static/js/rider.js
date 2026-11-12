@@ -500,4 +500,32 @@
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) loadBoard().catch(function () {});
   });
+
+  // Pin height to the visible viewport so the complete-panel submit
+  // button stays above browser chrome / the home indicator.
+  function syncViewportHeight() {
+    var vv = window.visualViewport;
+    var h = vv ? vv.height : window.innerHeight;
+    var top = vv ? vv.offsetTop : 0;
+    var left = vv ? vv.offsetLeft : 0;
+    if (h) root.style.setProperty("--wa-vvh", Math.round(h) + "px");
+    root.style.transform = (top || left)
+      ? "translate(" + Math.round(left) + "px," + Math.round(top) + "px)"
+      : "";
+    if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+    if (document.documentElement.scrollTop) {
+      document.documentElement.scrollTop = 0;
+    }
+    if (document.body.scrollTop) document.body.scrollTop = 0;
+    var kb = !!(vv && (window.innerHeight - vv.height > 120 || top > 0));
+    root.classList.toggle("is-kb", kb);
+  }
+
+  syncViewportHeight();
+  window.addEventListener("resize", syncViewportHeight);
+  window.addEventListener("orientationchange", syncViewportHeight);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", syncViewportHeight);
+    window.visualViewport.addEventListener("scroll", syncViewportHeight);
+  }
 })();

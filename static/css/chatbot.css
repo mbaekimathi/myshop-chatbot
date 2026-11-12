@@ -702,24 +702,11 @@ html[data-theme="dark"] .comms {
   max-width: 100%;
 }
 
-/* Cart / stock / contacts overlays sit above the footer row */
-.comms.wa-app:has(> .app-footer) .wa-stock,
-.comms.wa-app:has(> .app-footer) .wa-app__contacts,
-.comms.wa-app:has(> .app-footer) .wa-group-settings {
-  bottom: var(--wa-app-footer-h, 2.35rem);
-}
-
-/* Hide footer while cart/overlays need the full height (all breakpoints) */
+/* Hide footer while overlays need the full height (all breakpoints) */
 .wa-app:has(.wa-stock:not([hidden])) > .app-footer,
 .wa-app:has(.wa-app__contacts:not([hidden])) > .app-footer,
 .wa-app:has(.wa-group-settings:not([hidden])) > .app-footer {
   display: none;
-}
-
-.wa-app:has(.wa-stock:not([hidden])),
-.wa-app:has(.wa-app__contacts:not([hidden])),
-.wa-app:has(.wa-group-settings:not([hidden])) {
-  --wa-app-footer-h: 0px;
 }
 
 .wa-app__shell {
@@ -1445,12 +1432,6 @@ html[data-theme="dark"] .comms {
   .wa-app.is-kb > .app-footer,
   .all-app > .app-footer {
     display: none;
-  }
-
-  .comms.wa-app:has(> .app-footer) .wa-stock,
-  .comms.wa-app:has(> .app-footer) .wa-app__contacts,
-  .comms.wa-app:has(> .app-footer) .wa-group-settings {
-    bottom: var(--wa-app-footer-h, 2.1rem);
   }
 
   .auth-main {
@@ -3047,12 +3028,13 @@ html[data-theme="dark"] .wa-card__head--out { color: #7be3c8; }
 .wa-stock__body { flex: 1 1 auto; min-height: 0; }
 
 .wa-stock__foot {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  padding: 0.7rem 0.9rem calc(0.7rem + env(safe-area-inset-bottom));
+  padding: 0.7rem 0.9rem;
+  padding-bottom: max(1rem, calc(0.75rem + env(safe-area-inset-bottom)));
   border-top: 1px solid var(--wa-line);
   background: var(--wa-panel-2);
   overscroll-behavior: contain;
@@ -5562,4 +5544,26 @@ html[data-theme="dark"] .wa-card__head--active { color: #f0a57a; }
 .rider-app .wa-stock__field > input:focus {
   border-color: var(--wa-send);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--wa-send) 22%, transparent);
+}
+
+/* Keep "Mark delivered" above the home indicator / browser chrome */
+.rider-app .wa-stock[data-rider-panel="complete"] {
+  inset: 0;
+  z-index: 6;
+}
+.rider-app .wa-stock[data-rider-panel="complete"] .wa-stock__foot {
+  flex: 0 0 auto;
+  max-height: none;
+  padding-bottom: max(1.25rem, calc(1rem + env(safe-area-inset-bottom)));
+}
+.rider-app .wa-stock[data-rider-panel="complete"] .wa-stock__send {
+  min-height: 2.85rem;
+}
+
+@media (max-width: 639px) {
+  .rider-app .wa-stock[data-rider-panel="complete"] .wa-stock__foot {
+    max-height: none;
+    flex: 0 0 auto;
+    padding-bottom: max(1.35rem, calc(1.1rem + env(safe-area-inset-bottom)));
+  }
 }

@@ -8,8 +8,8 @@ one consolidated stylesheet `static/css/chatbot.css` (Manrope + Lucide, same
 ## Database
 Shares the `myshop` MySQL DB with the MY-SHOP project (`..\MY-SHOP`).
 - `chat/myshop_models.py` — `managed = False` read models over MY-SHOP tables
-  (`shops_shop`, `items_*`, `shops_shopreceipt*`, `shops_expense`,
-  `shops_shopdaysession`, `shops_companyprofile`,
+  (`shops_shop`, `items_*`, `shops_shopreceipt*`, `shops_shopdelivery*`,
+  `shops_expense`, `shops_shopdaysession`, `shops_companyprofile`,
   `shops_companyanalyticssettings`, `shops_companypossettings`,
   `shops_shoppossettings`). Never add real FKs to them.
   Sales / item analytics follow `receipt_data_source` (pending|confirmed);
@@ -22,6 +22,22 @@ Shares the `myshop` MySQL DB with the MY-SHOP project (`..\MY-SHOP`).
 Shop session key `chatbot_shop_id`. Shops sign in with `shops_shop.login_code`
 + `password_hash` (Django `check_password`, Argon2). Suspended/hidden shops
 are rejected — mirrors `shops.services.authenticate_shop_login`.
+Employees use `chatbot_employee_id`. Riders land on `/role/rider/` (WhatsApp
+delivery board); store managers on `/role/store-manager/`; admins/IT on
+`/all/`; other roles get a placeholder role home.
+
+## Rider deliveries
+WhatsApp-style board at `/role/rider/` mirrors MY-SHOP `/rider/` over
+`shops_shopdelivery` via `chat/rider_deliveries.py`:
+- Boards: **Open** (location only — client contact hidden), **Active**
+  (accepted by this rider), **Done** (delivered / delivered_paid / completed).
+- `POST /api/rider/deliveries/<id>/accept/` — first rider wins; optional
+  `shops_shopdelivery_assigned_riders` restricts who may claim.
+- `POST /api/rider/deliveries/<id>/complete/` — sale needs `receiver_name`
+  (defaults to client); credit unpaid → `delivered`, with
+  `payment_reference` → `delivered_paid`. Never mutates receipt settlement.
+- Poll: `GET /api/rider/board/` + `GET /api/rider/status/` (open snapshot).
+  STK push stays in MY-SHOP for now.
 
 ## Member confirmation
 Staff signed in via the employee portal (`chatbot_employee_id`) who act on a

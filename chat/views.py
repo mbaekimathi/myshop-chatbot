@@ -17,18 +17,27 @@ from django.views.decorators.http import require_GET, require_POST
 
 from . import bot as bot_engine
 from . import icons as icon_ops
+from . import rider_deliveries as rider_ops
 from . import services
 from . import stock as stock_ops
+from . import store_stock as store_stock_ops
 from .auth import (
+    api_rider_required,
     api_shop_required,
+    api_store_manager_required,
     authenticate_employee,
     authenticate_shop,
+    can_view_all_shops,
     current_employee,
     current_shop,
     employee_allocated_to_shop,
     login_employee,
     login_shop,
     logout_shop,
+    role_home_url,
+    role_icon,
+    role_label,
+    role_slug,
     shop_required,
 )
 from .models import Conversation, ConversationKind, Message, Participant
@@ -267,8 +276,9 @@ def login_view(request):
     if request.method == "GET":
         if current_shop(request) is not None:
             return redirect("chat:app")
-        if current_employee(request) is not None:
-            return redirect("chat:all_shops")
+        employee = current_employee(request)
+        if employee is not None:
+            return redirect(role_home_url(employee["role"]))
 
     error = ""
     code = ""
@@ -287,15 +297,12 @@ def login_view(request):
             employee = authenticate_employee(code, password)
             if employee is None:
                 cache.set(key, attempts + 1, LOGIN_WINDOW_SECONDS)
-                error = (
-                    "Invalid staff ID or password. Only admin, manager "
-                    "and IT support accounts can sign in here."
-                )
+                error = "Invalid staff ID or password."
             else:
                 cache.delete(key)
                 request.session.cycle_key()
                 login_employee(request, employee)
-                return redirect("chat:all_shops")
+                return redirect(role_home_url(employee["role"]))
         else:
             shop = authenticate_shop(code, password)
             if shop is None:
@@ -415,11 +422,232 @@ def pick_shop(request):
     return redirect("chat:app")
 
 
+def role_home_view(request, slug):
+    """Role workspace for staff who do not get the all-shops view."""
+    employee = current_employee(request)
+    if employee is None:
+        return redirect("chat:login")
+    if can_view_all_shops(employee["role"]):
+        return redirect("chat:all_shops")
+    expected = role_slug(employee["role"])
+    if slug != expected:
+        return redirect(role_home_url(employee["role"]))
+    role = employee["role"]
+    context = {
+        "employee": employee,
+        "company_name": _company_name(),
+        "role": role,
+        "role_label": role_label(role),
+        "role_icon": role_icon(role),
+        "role_slug": expected,
+    }
+    if role == "store_manager":
+        context.update(
+            {
+                "items_url": reverse("chat:api_store_items"),
+                "employees_url": reverse("chat:api_store_employees"),
+                "stock_in_url": reverse("chat:api_store_stock_in"),
+                "stock_out_url": reverse("chat:api_store_stock_out"),
+                "report_url": reverse("chat:api_store_report"),
+                "feed_url": reverse("chat:api_store_feed"),
+            }
+        )
+        return render(request, "chat/store_manager.html", context)
+    if role == "rider":
+        context.update(
+            {
+                "board_url": reverse("chat:api_rider_board"),
+                "status_url": reverse("chat:api_rider_status"),
+                "accept_url_template": reverse(
+                    "chat:api_rider_accept", kwargs={"delivery_id": 0}
+                ).replace("/0/", "/__ID__/"),
+                "complete_url_template": reverse(
+                    "chat:api_rider_complete", kwargs={"delivery_id": 0}
+                ).replace("/0/", "/__ID__/"),
+            }
+        )
+        return render(request, "chat/rider.html", context)
+    return render(request, "chat/role.html", context)
+
+
+@api_rider_required
+@require_GET
+def api_rider_board(request):
+    """Open / active / completed delivery boards for the signed-in rider."""
+    board = rider_ops.build_rider_board(request.chat_employee["id"])
+    return JsonResponse({"ok": True, **board})
+
+
+@api_rider_required
+@require_GET
+def api_rider_status(request):
+    """Pollable open-delivery snapshot for new-job alerts."""
+    return JsonResponse(rider_ops.rider_alert_payload(request.chat_employee["id"]))
+
+
+@api_rider_required
+@require_POST
+def api_rider_accept(request, delivery_id: int):
+    """Claim an open delivery — first rider wins."""
+    try:
+        card = rider_ops.accept_delivery(
+            delivery_id=delivery_id,
+            rider_id=request.chat_employee["id"],
+        )
+    except rider_ops.RiderError as exc:
+        return _err(str(exc))
+    return JsonResponse(
+        {
+            "ok": True,
+            "delivery": card,
+            "message": "Delivery accepted. Client details are now on your active board.",
+        }
+    )
+
+
+@api_rider_required
+@require_POST
+def api_rider_complete(request, delivery_id: int):
+    """Mark an accepted delivery as delivered (sale/credit rules)."""
+    data = _json_body(request)
+    try:
+        card = rider_ops.complete_delivery(
+            delivery_id=delivery_id,
+            rider_id=request.chat_employee["id"],
+            receiver_name=data.get("receiver_name") or "",
+            payment_reference=data.get("payment_reference") or "",
+            payment_at=data.get("payment_at") or "",
+            payment_amount=data.get("payment_amount") or "",
+        )
+    except rider_ops.RiderError as exc:
+        return _err(str(exc))
+    paid = card.get("status") == "delivered_paid"
+    return JsonResponse(
+        {
+            "ok": True,
+            "delivery": card,
+            "message": (
+                "Delivery marked as delivered (paid). Sale/credit status unchanged."
+                if paid
+                else "Delivery marked as delivered. Sale/credit status unchanged."
+            ),
+        }
+    )
+
+
+@api_store_manager_required
+@require_GET
+def api_store_items(request):
+    """Item typeahead + central-store qty for the Store Manager cart."""
+    q = request.GET.get("q") or ""
+    return JsonResponse(
+        {
+            "ok": True,
+            "items": store_stock_ops.search_store_items(query=q, limit=12),
+        }
+    )
+
+
+@api_store_manager_required
+@require_GET
+def api_store_employees(request):
+    """Active employee typeahead for delivered-by / received-by."""
+    return JsonResponse(
+        {
+            "ok": True,
+            "employees": store_stock_ops.search_active_employees(
+                query=request.GET.get("q") or "",
+                limit=request.GET.get("limit") or 12,
+            ),
+        }
+    )
+
+
+@api_store_manager_required
+@require_POST
+def api_store_stock_in(request):
+    """Record qty into the central store (does not change shop floor stock)."""
+    data = _json_body(request)
+    try:
+        movements = store_stock_ops.record_store_stock_lines(
+            mode="in",
+            actor_id=request.chat_employee["id"],
+            lines=data.get("lines") or [],
+            received_by_id=data.get("received_by_id"),
+            note=data.get("note") or "",
+        )
+    except store_stock_ops.StoreError as exc:
+        return _err(str(exc))
+    body = store_stock_ops.store_stock_body(movements, mode="in")
+    card = store_stock_ops.store_stock_card(movements, mode="in")
+    return JsonResponse(
+        {
+            "ok": True,
+            "movements": store_stock_ops.serialize_movements(movements),
+            "count": len(movements),
+            "body": body,
+            "card": card,
+        }
+    )
+
+
+@api_store_manager_required
+@require_POST
+def api_store_stock_out(request):
+    """Record qty leaving the central store (must not exceed on-hand)."""
+    data = _json_body(request)
+    try:
+        movements = store_stock_ops.record_store_stock_lines(
+            mode="out",
+            actor_id=request.chat_employee["id"],
+            lines=data.get("lines") or [],
+            received_by_id=data.get("received_by_id"),
+            note=data.get("note") or "",
+        )
+    except store_stock_ops.StoreError as exc:
+        return _err(str(exc))
+    body = store_stock_ops.store_stock_body(movements, mode="out")
+    card = store_stock_ops.store_stock_card(movements, mode="out")
+    return JsonResponse(
+        {
+            "ok": True,
+            "movements": store_stock_ops.serialize_movements(movements),
+            "count": len(movements),
+            "body": body,
+            "card": card,
+        }
+    )
+
+
+@api_store_manager_required
+@require_GET
+def api_store_feed(request):
+    """WhatsApp-style reference feed of recent store stock in/out cards."""
+    return JsonResponse(
+        {
+            "ok": True,
+            "messages": store_stock_ops.build_store_feed(
+                limit=request.GET.get("limit") or 40
+            ),
+        }
+    )
+
+
+@api_store_manager_required
+@require_GET
+def api_store_report(request):
+    """Filtered central-store movement ledger."""
+    report = store_stock_ops.build_store_stock_report(request.GET)
+    return JsonResponse({"ok": True, **report})
+
+
 def all_shops_view(request):
     """Employee-only combined assistant view across every shop."""
     employee = current_employee(request)
     if employee is None:
         return redirect("chat:login")
+    if not can_view_all_shops(employee["role"]):
+        return redirect(role_home_url(employee["role"]))
     # Landing here means combined view — drop any single-shop session.
     request.session["chatbot_all_shops"] = True
     request.session.pop("chatbot_shop_id", None)

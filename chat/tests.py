@@ -35,6 +35,10 @@ from .myshop_models import (
     Supplier,
     StockMovement,
     StockMovementLine,
+    StoreStock,
+    StoreStockMovement,
+    ShopDelivery,
+    ShopDeliveryAssignedRider,
     Client as ClientModel,
 )
 
@@ -56,6 +60,10 @@ UNMANAGED = [
     Supplier,
     StockMovement,
     StockMovementLine,
+    StoreStock,
+    StoreStockMovement,
+    ShopDelivery,
+    ShopDeliveryAssignedRider,
     ClientModel,
 ]
 
@@ -173,6 +181,109 @@ class AuthTests(ChatTestCase):
         resp = self.client.get(reverse("chat:app"))
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/login/", resp["Location"])
+
+
+class EmployeeRoleLoginTests(ChatTestCase):
+    """Any active employee may sign in; admins/IT get /all/, others get
+    an empty role workspace."""
+
+    EMPLOYEE_DDL = (
+        "CREATE TABLE IF NOT EXISTS employees_employeeprofile ("
+        "id INTEGER PRIMARY KEY, employee_id VARCHAR(12) NOT NULL, "
+        "user_id BIGINT, role VARCHAR(32) NOT NULL, "
+        "status VARCHAR(16) NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS "
+        "employees_employeeprofile_assigned_shops ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "employeeprofile_id BIGINT NOT NULL, shop_id BIGINT NOT NULL)",
+    )
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import User
+
+        with connection.cursor() as cur:
+            for ddl in self.EMPLOYEE_DDL:
+                cur.execute(ddl)
+            cur.execute("DELETE FROM employees_employeeprofile")
+            cur.execute(
+                "DELETE FROM employees_employeeprofile_assigned_shops"
+            )
+
+        self.cashier_user = User.objects.create_user(
+            username="cashier1", password="pass-c"
+        )
+        self.it_user = User.objects.create_user(
+            username="itsupport", password="pass-i"
+        )
+        self.admin_user = User.objects.create_user(
+            username="superadmin", password="pass-a"
+        )
+        with connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [10, "200001", self.cashier_user.pk, "shop_cashier", "active"],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [11, "200002", self.it_user.pk, "it_support", "active"],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [12, "200003", self.admin_user.pk, "super_admin", "active"],
+            )
+
+    def employee_login(self, code, password):
+        return self.client.post(
+            reverse("chat:login"),
+            {"mode": "employee", "login_code": code, "password": password},
+        )
+
+    def test_cashier_lands_on_role_page(self):
+        resp = self.employee_login("200001", "pass-c")
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], reverse("chat:role_home", args=["shop-cashier"]))
+        page = self.client.get(resp["Location"])
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "Shop Cashier")
+        self.assertContains(page, "appear here soon")
+
+    def test_it_support_lands_on_all_shops(self):
+        resp = self.employee_login("200002", "pass-i")
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], reverse("chat:all_shops"))
+
+    def test_super_admin_lands_on_all_shops(self):
+        resp = self.employee_login("200003", "pass-a")
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], reverse("chat:all_shops"))
+
+    def test_cashier_blocked_from_all_shops(self):
+        self.employee_login("200001", "pass-c")
+        resp = self.client.get(reverse("chat:all_shops"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            resp["Location"], reverse("chat:role_home", args=["shop-cashier"])
+        )
+
+    def test_wrong_employee_password_rejected(self):
+        resp = self.employee_login("200001", "wrong")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Invalid staff ID or password")
+
+    def test_role_slug_mismatch_redirects_home(self):
+        self.employee_login("200001", "pass-c")
+        resp = self.client.get(reverse("chat:role_home", args=["rider"]))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            resp["Location"], reverse("chat:role_home", args=["shop-cashier"])
+        )
 
 
 class DirectChatTests(ChatTestCase):
@@ -2153,3 +2264,498 @@ class ReceiptsPageTests(ChatTestCase):
         self.assertContains(resp, 'data-fab="stockin"')
         self.assertContains(resp, 'data-fab="expense"')
         self.assertContains(resp, "data-fab-others-toggle")
+
+
+class StoreManagerStockTests(ChatTestCase):
+    """Central store stock in/out/report — separate from shop floor stock."""
+
+    EMPLOYEE_DDL = (
+        "CREATE TABLE IF NOT EXISTS employees_employeeprofile ("
+        "id INTEGER PRIMARY KEY, employee_id VARCHAR(12) NOT NULL, "
+        "user_id BIGINT, role VARCHAR(32) NOT NULL, "
+        "status VARCHAR(16) NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS "
+        "employees_employeeprofile_assigned_shops ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "employeeprofile_id BIGINT NOT NULL, shop_id BIGINT NOT NULL)",
+    )
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import User
+
+        with connection.cursor() as cur:
+            for ddl in self.EMPLOYEE_DDL:
+                cur.execute(ddl)
+            cur.execute("DELETE FROM employees_employeeprofile")
+            cur.execute(
+                "DELETE FROM employees_employeeprofile_assigned_shops"
+            )
+
+        self.manager_user = User.objects.create_user(
+            username="storemgr", password="pass-s",
+            first_name="Sam", last_name="Store",
+        )
+        self.helper_user = User.objects.create_user(
+            username="helper1", password="pass-h",
+            first_name="Helen", last_name="Helper",
+        )
+        self.cashier_user = User.objects.create_user(
+            username="cashierx", password="pass-c",
+            first_name="Chris", last_name="Cash",
+        )
+        with connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [20, "300001", self.manager_user.pk, "store_manager", "active"],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [21, "300002", self.helper_user.pk, "employee", "active"],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [22, "300003", self.cashier_user.pk, "shop_cashier", "active"],
+            )
+
+        self.item = Item.objects.create(
+            category="Grocery", name="Sugar 1kg",
+            minimum_selling_price=Decimal("100"),
+            shop_price=Decimal("150"), stock=Decimal("40"),
+            low_stock_notify=False, low_stock_threshold=0,
+            is_suspended=False,
+        )
+        self.shop_stock = ShopStock.objects.create(
+            shop_id=self.shop_a.pk, item_id=self.item.pk,
+            quantity=Decimal("10"), low_stock_threshold=5,
+            average_cost=Decimal("80"),
+        )
+
+    def login_store_manager(self):
+        return self.client.post(
+            reverse("chat:login"),
+            {"mode": "employee", "login_code": "300001", "password": "pass-s"},
+        )
+
+    def test_store_manager_home_has_tools(self):
+        resp = self.login_store_manager()
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            resp["Location"], reverse("chat:role_home", args=["store-manager"])
+        )
+        page = self.client.get(resp["Location"])
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "Store Stock In")
+        self.assertContains(page, "Store Assistant")
+        self.assertContains(page, "wa-app__stage")
+        self.assertContains(page, "data-sm-feed")
+        self.assertContains(page, 'data-sm-open="in"')
+        self.assertContains(page, 'data-sm-open="out"')
+        self.assertContains(page, "Type item name")
+        self.assertContains(page, 'data-sm-add')
+        self.assertContains(page, "wa-app__contacts-head")
+        self.assertContains(page, "wa-stock__foot")
+        self.assertContains(page, "store-manager.js")
+
+    def test_cashier_cannot_use_store_apis(self):
+        self.client.post(
+            reverse("chat:login"),
+            {"mode": "employee", "login_code": "300003", "password": "pass-c"},
+        )
+        resp = self.client.get(reverse("chat:api_store_items"))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_stock_in_out_separate_from_shop_stock(self):
+        self.login_store_manager()
+        in_resp = self.client.post(
+            reverse("chat:api_store_stock_in"),
+            data=json.dumps({
+                "received_by_id": 21,
+                "note": "Delivery A",
+                "lines": [{"item_id": self.item.pk, "quantity": "5"}],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(in_resp.status_code, 200, in_resp.content)
+        in_data = in_resp.json()
+        self.assertTrue(in_data["ok"])
+        self.assertIn("store_stock", in_data["card"])
+        self.assertEqual(in_data["card"]["store_stock"]["mode"], "in")
+        self.assertIn("Store stock in", in_data["body"])
+        store = StoreStock.objects.get(item_id=self.item.pk)
+        self.assertEqual(store.quantity, Decimal("5.000"))
+
+        self.item.refresh_from_db()
+        self.shop_stock.refresh_from_db()
+        self.assertEqual(self.item.stock, Decimal("40"))
+        self.assertEqual(self.shop_stock.quantity, Decimal("10"))
+
+        out_resp = self.client.post(
+            reverse("chat:api_store_stock_out"),
+            data=json.dumps({
+                "received_by_id": 21,
+                "lines": [{"item_id": self.item.pk, "quantity": "2"}],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(out_resp.status_code, 200, out_resp.content)
+        self.assertTrue(out_resp.json()["ok"])
+        store.refresh_from_db()
+        self.assertEqual(store.quantity, Decimal("3.000"))
+        self.assertEqual(StoreStockMovement.objects.count(), 2)
+
+        self.item.refresh_from_db()
+        self.shop_stock.refresh_from_db()
+        self.assertEqual(self.item.stock, Decimal("40"))
+        self.assertEqual(self.shop_stock.quantity, Decimal("10"))
+
+    def test_stock_out_rejects_overdraw(self):
+        self.login_store_manager()
+        StoreStock.objects.create(item_id=self.item.pk, quantity=Decimal("1"))
+        resp = self.client.post(
+            reverse("chat:api_store_stock_out"),
+            data=json.dumps({
+                "received_by_id": 21,
+                "lines": [{"item_id": self.item.pk, "quantity": "3"}],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Store only has", resp.json()["error"])
+
+    def test_store_report_lists_movements(self):
+        self.login_store_manager()
+        self.client.post(
+            reverse("chat:api_store_stock_in"),
+            data=json.dumps({
+                "received_by_id": 21,
+                "note": "Truck 1",
+                "lines": [{"item_id": self.item.pk, "quantity": "4"}],
+            }),
+            content_type="application/json",
+        )
+        report = self.client.get(reverse("chat:api_store_report") + "?range=all")
+        self.assertEqual(report.status_code, 200)
+        data = report.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["row_count"], 1)
+        self.assertEqual(data["total_in"], "4.000")
+        self.assertEqual(data["rows"][0]["counterpart"], "Helen Helper")
+        self.assertEqual(data["rows"][0]["note"], "Truck 1")
+
+    def test_employee_search(self):
+        self.login_store_manager()
+        resp = self.client.get(
+            reverse("chat:api_store_employees") + "?q=Helen"
+        )
+        self.assertEqual(resp.status_code, 200)
+        people = resp.json()["employees"]
+        self.assertEqual(len(people), 1)
+        self.assertEqual(people[0]["id"], 21)
+        self.assertEqual(people[0]["name"], "Helen Helper")
+
+    def test_store_feed_returns_cards(self):
+        self.login_store_manager()
+        self.client.post(
+            reverse("chat:api_store_stock_in"),
+            data=json.dumps({
+                "received_by_id": 21,
+                "note": "Truck",
+                "lines": [{"item_id": self.item.pk, "quantity": "2"}],
+            }),
+            content_type="application/json",
+        )
+        feed = self.client.get(reverse("chat:api_store_feed"))
+        self.assertEqual(feed.status_code, 200)
+        messages = feed.json()["messages"]
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["card"]["store_stock"]["mode"], "in")
+        self.assertEqual(
+            messages[0]["card"]["store_stock"]["counterpart"], "Helen Helper"
+        )
+
+
+class RiderRoleTests(ChatTestCase):
+    """WhatsApp-style rider board: open → accept → complete."""
+
+    EMPLOYEE_DDL = (
+        "CREATE TABLE IF NOT EXISTS employees_employeeprofile ("
+        "id INTEGER PRIMARY KEY, employee_id VARCHAR(12) NOT NULL, "
+        "user_id BIGINT, role VARCHAR(32) NOT NULL, "
+        "status VARCHAR(16) NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS "
+        "employees_employeeprofile_assigned_shops ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "employeeprofile_id BIGINT NOT NULL, shop_id BIGINT NOT NULL)",
+    )
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import User
+
+        with connection.cursor() as cur:
+            for ddl in self.EMPLOYEE_DDL:
+                cur.execute(ddl)
+            cur.execute("DELETE FROM employees_employeeprofile")
+            cur.execute(
+                "DELETE FROM employees_employeeprofile_assigned_shops"
+            )
+
+        self.rider_user = User.objects.create_user(
+            username="rider1", password="pass-r",
+            first_name="Rita", last_name="Rider",
+        )
+        self.other_rider_user = User.objects.create_user(
+            username="rider2", password="pass-r2",
+            first_name="Ron", last_name="Rider",
+        )
+        self.cashier_user = User.objects.create_user(
+            username="cashrider", password="pass-c",
+            first_name="Casey", last_name="Cash",
+        )
+        with connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [30, "400001", self.rider_user.pk, "rider", "active"],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [31, "400002", self.other_rider_user.pk, "rider", "active"],
+            )
+            cur.execute(
+                "INSERT INTO employees_employeeprofile "
+                "(id, employee_id, user_id, role, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [32, "400003", self.cashier_user.pk, "shop_cashier", "active"],
+            )
+
+        self.sale_receipt = ShopReceipt.objects.create(
+            shop_id=self.shop_a.pk,
+            receipt_number="DLV-S-1",
+            kind="sale",
+            payment_method="cash",
+            client_name="Ann Client",
+            client_phone="0711000111",
+            total=Decimal("2500"),
+            amount_paid=Decimal("2500"),
+            cash_amount=Decimal("2500"),
+            mpesa_amount=Decimal("0"),
+            status="confirmed",
+            created_by_id=32,
+        )
+        self.credit_receipt = ShopReceipt.objects.create(
+            shop_id=self.shop_a.pk,
+            receipt_number="DLV-C-1",
+            kind="credit",
+            payment_method="none",
+            client_name="Bob Credit",
+            client_phone="0722000222",
+            total=Decimal("1800"),
+            amount_paid=Decimal("0"),
+            cash_amount=Decimal("0"),
+            mpesa_amount=Decimal("0"),
+            status="confirmed",
+            created_by_id=32,
+        )
+        self.open_sale = ShopDelivery.objects.create(
+            receipt_id=self.sale_receipt.pk,
+            shop_id=self.shop_a.pk,
+            status=ShopDelivery.STATUS_OPEN,
+            location_text="Kilimani Gate B",
+            maps_url="https://maps.example/kilimani",
+            distance_km=Decimal("4.50"),
+            eta_minutes=18,
+            created_by_id=32,
+        )
+        self.open_credit = ShopDelivery.objects.create(
+            receipt_id=self.credit_receipt.pk,
+            shop_id=self.shop_a.pk,
+            status=ShopDelivery.STATUS_OPEN,
+            location_text="Westlands Plaza",
+            distance_km=Decimal("6.00"),
+            eta_minutes=25,
+            created_by_id=32,
+        )
+
+    def login_rider(self, code="400001", password="pass-r"):
+        return self.client.post(
+            reverse("chat:login"),
+            {"mode": "employee", "login_code": code, "password": password},
+        )
+
+    def test_rider_home_has_delivery_chat(self):
+        resp = self.login_rider()
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            resp["Location"], reverse("chat:role_home", args=["rider"])
+        )
+        page = self.client.get(resp["Location"])
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "Delivery Assistant")
+        self.assertContains(page, "data-rider-feed")
+        self.assertContains(page, "data-rider-tab=\"open\"")
+        self.assertContains(page, "rider.js")
+
+    def test_cashier_cannot_use_rider_apis(self):
+        self.client.post(
+            reverse("chat:login"),
+            {"mode": "employee", "login_code": "400003", "password": "pass-c"},
+        )
+        resp = self.client.get(reverse("chat:api_rider_board"))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_board_hides_client_on_open(self):
+        self.login_rider()
+        resp = self.client.get(reverse("chat:api_rider_board"))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["open_count"], 2)
+        open_job = next(j for j in data["open"] if j["id"] == self.open_sale.pk)
+        self.assertEqual(open_job["location_text"], "Kilimani Gate B")
+        self.assertEqual(open_job["client_name"], "")
+        self.assertEqual(open_job["client_phone"], "")
+        self.assertTrue(open_job["client_hidden"])
+
+    def test_accept_then_complete_sale(self):
+        self.login_rider()
+        accept = self.client.post(
+            reverse("chat:api_rider_accept", args=[self.open_sale.pk]),
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        self.assertEqual(accept.status_code, 200, accept.content)
+        card = accept.json()["delivery"]
+        self.assertEqual(card["status"], "accepted")
+        self.assertEqual(card["client_name"], "Ann Client")
+        self.assertEqual(card["client_phone"], "0711000111")
+
+        self.open_sale.refresh_from_db()
+        self.assertEqual(self.open_sale.status, ShopDelivery.STATUS_ACCEPTED)
+        self.assertEqual(self.open_sale.accepted_by_id, 30)
+
+        complete = self.client.post(
+            reverse("chat:api_rider_complete", args=[self.open_sale.pk]),
+            data=json.dumps({"receiver_name": "Ann Client"}),
+            content_type="application/json",
+        )
+        self.assertEqual(complete.status_code, 200, complete.content)
+        done = complete.json()["delivery"]
+        self.assertEqual(done["status"], "delivered")
+        self.assertEqual(done["receiver_name"], "Ann Client")
+
+        self.open_sale.refresh_from_db()
+        self.assertEqual(self.open_sale.status, ShopDelivery.STATUS_DELIVERED)
+        self.sale_receipt.refresh_from_db()
+        self.assertEqual(self.sale_receipt.status, "confirmed")
+        self.assertEqual(self.sale_receipt.kind, "sale")
+
+    def test_second_rider_cannot_accept_claimed_job(self):
+        self.login_rider()
+        first = self.client.post(
+            reverse("chat:api_rider_accept", args=[self.open_sale.pk]),
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        self.assertEqual(first.status_code, 200)
+
+        self.client.post(reverse("chat:logout"))
+        self.login_rider("400002", "pass-r2")
+        second = self.client.post(
+            reverse("chat:api_rider_accept", args=[self.open_sale.pk]),
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        self.assertEqual(second.status_code, 400)
+        self.assertIn("already accepted", second.json()["error"])
+
+    def test_assigned_rider_only(self):
+        ShopDeliveryAssignedRider.objects.create(
+            shopdelivery_id=self.open_sale.pk,
+            employeeprofile_id=31,
+        )
+        self.login_rider()  # rider 30
+        denied = self.client.post(
+            reverse("chat:api_rider_accept", args=[self.open_sale.pk]),
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        self.assertEqual(denied.status_code, 400)
+        self.assertIn("not assigned", denied.json()["error"])
+
+        board = self.client.get(reverse("chat:api_rider_board")).json()
+        open_ids = {row["id"] for row in board["open"]}
+        self.assertNotIn(self.open_sale.pk, open_ids)
+        self.assertIn(self.open_credit.pk, open_ids)
+
+    def test_credit_complete_unpaid_and_paid(self):
+        self.login_rider()
+        self.client.post(
+            reverse("chat:api_rider_accept", args=[self.open_credit.pk]),
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        unpaid = self.client.post(
+            reverse("chat:api_rider_complete", args=[self.open_credit.pk]),
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        self.assertEqual(unpaid.status_code, 200, unpaid.content)
+        self.assertEqual(unpaid.json()["delivery"]["status"], "delivered")
+        self.open_credit.refresh_from_db()
+        self.assertEqual(self.open_credit.status, ShopDelivery.STATUS_DELIVERED)
+        self.assertEqual(self.open_credit.payment_reference, "")
+
+        # Re-open a fresh credit job for paid path.
+        credit2 = ShopReceipt.objects.create(
+            shop_id=self.shop_a.pk,
+            receipt_number="DLV-C-2",
+            kind="credit",
+            payment_method="none",
+            client_name="Bob Credit",
+            client_phone="0722000222",
+            total=Decimal("900"),
+            amount_paid=Decimal("0"),
+            cash_amount=Decimal("0"),
+            mpesa_amount=Decimal("0"),
+            status="confirmed",
+            created_by_id=32,
+        )
+        job2 = ShopDelivery.objects.create(
+            receipt_id=credit2.pk,
+            shop_id=self.shop_a.pk,
+            status=ShopDelivery.STATUS_OPEN,
+            location_text="Parklands",
+            created_by_id=32,
+        )
+        self.client.post(
+            reverse("chat:api_rider_accept", args=[job2.pk]),
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        paid = self.client.post(
+            reverse("chat:api_rider_complete", args=[job2.pk]),
+            data=json.dumps({
+                "payment_reference": "QK12ABCDE",
+                "payment_amount": "900",
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(paid.status_code, 200, paid.content)
+        self.assertEqual(paid.json()["delivery"]["status"], "delivered_paid")
+        job2.refresh_from_db()
+        self.assertEqual(job2.status, ShopDelivery.STATUS_DELIVERED_PAID)
+        self.assertEqual(job2.payment_reference, "QK12ABCDE")
+        credit2.refresh_from_db()
+        self.assertEqual(credit2.kind, "credit")
+        self.assertEqual(credit2.amount_paid, Decimal("0"))

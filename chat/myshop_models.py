@@ -361,3 +361,104 @@ class StockMovementLine(models.Model):
     class Meta:
         managed = False
         db_table = "items_stockmovementline"
+
+
+class StoreStock(models.Model):
+    """Central warehouse qty per item — independent of shop floor stock."""
+
+    id = models.BigAutoField(primary_key=True)
+    item_id = models.BigIntegerField(unique=True)
+    quantity = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "items_storestock"
+
+
+class StoreStockMovement(models.Model):
+    """Ledger for central store stock in/out. Never mutates shop stock."""
+
+    id = models.BigAutoField(primary_key=True)
+    movement_type = models.CharField(max_length=8)  # in | out
+    item_id = models.BigIntegerField()
+    quantity = models.DecimalField(max_digits=12, decimal_places=3)
+    balance_after = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    created_by_id = models.BigIntegerField()
+    received_by_id = models.BigIntegerField()
+    note = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = "items_storestockmovement"
+        ordering = ["-created_at", "-id"]
+
+
+class ShopDelivery(models.Model):
+    """Customer delivery job from MY-SHOP checkout (`shops_shopdelivery`)."""
+
+    STATUS_OPEN = "open"
+    STATUS_ACCEPTED = "accepted"
+    STATUS_DELIVERED = "delivered"
+    STATUS_DELIVERED_PAID = "delivered_paid"
+    STATUS_COMPLETED = "completed"
+    STATUS_CANCELLED = "cancelled"
+
+    DONE_STATUSES = frozenset(
+        {
+            STATUS_DELIVERED,
+            STATUS_DELIVERED_PAID,
+            STATUS_COMPLETED,
+        }
+    )
+
+    id = models.BigAutoField(primary_key=True)
+    receipt_id = models.BigIntegerField(unique=True)
+    shop_id = models.BigIntegerField()
+    status = models.CharField(max_length=16, default=STATUS_OPEN)
+    location_text = models.CharField(max_length=500)
+    latitude = models.DecimalField(
+        max_digits=10, decimal_places=7, null=True, blank=True
+    )
+    longitude = models.DecimalField(
+        max_digits=10, decimal_places=7, null=True, blank=True
+    )
+    maps_url = models.URLField(max_length=500, blank=True, default="")
+    distance_km = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True
+    )
+    eta_minutes = models.PositiveIntegerField(null=True, blank=True)
+    expected_at = models.DateTimeField(null=True, blank=True)
+    accepted_by_id = models.BigIntegerField(null=True, blank=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    receiver_name = models.CharField(max_length=200, blank=True, default="")
+    payment_reference = models.CharField(max_length=64, blank=True, default="")
+    payment_at = models.DateTimeField(null=True, blank=True)
+    payment_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    created_by_id = models.BigIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "shops_shopdelivery"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Delivery {self.pk}"
+
+
+class ShopDeliveryAssignedRider(models.Model):
+    """Optional assignees — empty means any rider may accept."""
+
+    id = models.BigAutoField(primary_key=True)
+    shopdelivery_id = models.BigIntegerField()
+    employeeprofile_id = models.BigIntegerField()
+
+    class Meta:
+        managed = False
+        db_table = "shops_shopdelivery_assigned_riders"

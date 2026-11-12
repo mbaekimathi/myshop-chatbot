@@ -2167,57 +2167,146 @@
   // On phones the scrollable body/details clip dropdowns — pin them to
   // fixed coordinates so they float over the rest of the panel.
   var mqNarrow = window.matchMedia("(max-width: 639px)");
+  var sugMask = null;
+
+  function ensureSugMask() {
+    if (sugMask) return sugMask;
+    sugMask = document.createElement("button");
+    sugMask.type = "button";
+    sugMask.className = "wa-stock__sugmask";
+    sugMask.setAttribute("aria-label", "Dismiss suggestions");
+    sugMask.hidden = true;
+    sugMask.addEventListener("click", function () {
+      hideAllSuggests();
+    });
+    root.appendChild(sugMask);
+    return sugMask;
+  }
+
+  function setSugMask(on) {
+    var mask = ensureSugMask();
+    mask.hidden = !on;
+  }
+
+  function suggestHome(box) {
+    return box._sugHome || box.parentElement;
+  }
+
+  function rememberSuggestHome(box) {
+    if (!box._sugHome) box._sugHome = box.parentElement;
+  }
+
+  function restoreSuggestHome(box) {
+    var home = box._sugHome;
+    if (home && box.parentElement !== home) home.appendChild(box);
+  }
+
+  function clearSuggestPos(box) {
+    box.classList.remove("is-float");
+    box.style.left = box.style.top = box.style.bottom =
+      box.style.width = box.style.maxHeight = box.style.visibility = "";
+    restoreSuggestHome(box);
+  }
+
+  // When the keyboard opens we translate the app root — that makes
+  // position:fixed children use the root as containing block, so coords
+  // must be relative to root's box, not the layout viewport.
+  function floatOriginRect() {
+    var cs = window.getComputedStyle(root);
+    if (cs.transform && cs.transform !== "none") {
+      return root.getBoundingClientRect();
+    }
+    return { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+  }
 
   function floatSuggest(box) {
-    var clipEl = box.closest(".wa-stock__body") ||
-      box.closest(".wa-stock__details");
-    if (!mqNarrow.matches || !clipEl) {
-      box.classList.remove("is-float");
-      box.style.left = box.style.top = box.style.bottom =
-        box.style.width = box.style.maxHeight = box.style.visibility = "";
+    rememberSuggestHome(box);
+    var home = suggestHome(box);
+    var clipEl = home.closest(".wa-stock__body") ||
+      home.closest(".wa-stock__details");
+    if (!mqNarrow.matches || !clipEl || box.hidden) {
+      clearSuggestPos(box);
       return;
     }
-    var anchorEl = box.parentElement.querySelector("input") || box.parentElement;
+    var anchorEl = home.querySelector("input") || home;
+    // Prefer room below the field so the list doesn't cover the next input.
+    try {
+      anchorEl.scrollIntoView({ block: "center", inline: "nearest" });
+    } catch (err) {
+      try { anchorEl.scrollIntoView(true); } catch (e2) {}
+    }
+    // Park on the app root so overflow:hidden on .wa-stock can't clip us
+    // when the keyboard transform makes fixed use the root as CB.
+    if (box.parentElement !== root) root.appendChild(box);
     var anchor = anchorEl.getBoundingClientRect();
     var crect = clipEl.getBoundingClientRect();
+    var origin = floatOriginRect();
+    var vv = window.visualViewport;
+    var viewTop = vv ? vv.offsetTop : 0;
+    var viewBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
     box.style.visibility =
       anchor.bottom < crect.top || anchor.top > crect.bottom ? "hidden" : "";
-    var vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
     box.classList.add("is-float");
-    box.style.left = anchor.left + "px";
-    box.style.width = anchor.width + "px";
-    var below = vh - anchor.bottom - 8;
-    if (below >= 140 || below >= anchor.top - 8) {
-      box.style.top = anchor.bottom + 4 + "px";
+    box.style.left = Math.max(8, anchor.left - origin.left) + "px";
+    box.style.width = Math.min(anchor.width, window.innerWidth - 16) + "px";
+    var below = viewBottom - anchor.bottom - 8;
+    var above = anchor.top - viewTop - 8;
+    // Keep lists compact on soft keyboards so sibling fields stay reachable.
+    var cap = Math.min(220, Math.max(120, Math.floor((viewBottom - viewTop) * 0.42)));
+    if (below >= 120 || below >= above) {
+      box.style.top = (anchor.bottom - origin.top + 4) + "px";
       box.style.bottom = "";
-      box.style.maxHeight = Math.min(240, Math.max(110, below)) + "px";
+      box.style.maxHeight = Math.min(cap, Math.max(96, below)) + "px";
     } else {
       box.style.top = "";
-      box.style.bottom = vh - anchor.top + 4 + "px";
-      box.style.maxHeight = Math.min(240, Math.max(110, anchor.top - 8)) + "px";
+      box.style.bottom = (origin.bottom - anchor.top + 4) + "px";
+      box.style.maxHeight = Math.min(cap, Math.max(96, above)) + "px";
     }
   }
 
   function repositionFloatSuggests() {
-    root.querySelectorAll(".wa-stock__suggest.is-float").forEach(floatSuggest);
+    var open = root.querySelectorAll(".wa-stock__suggest.is-float:not([hidden])");
+    open.forEach(floatSuggest);
+    setSugMask(!!open.length && mqNarrow.matches);
+  }
+
+  function suggestBarHtml() {
+    return (
+      '<div class="wa-stock__sugbar">' +
+      '<span class="wa-stock__sughint">Suggestions</span>' +
+      '<button type="button" class="wa-stock__sugx" data-sugx ' +
+      'aria-label="Close suggestions">' +
+      '<i data-lucide="x"></i><span>Close</span></button></div>'
+    );
+  }
+
+  function hideAllSuggests(except) {
+    root.querySelectorAll(".wa-stock__suggest:not([hidden])").forEach(
+      function (el) {
+        if (except && el === except) return;
+        hideSuggest(el);
+      }
+    );
   }
 
   function showSuggest(box, html) {
-    box.innerHTML =
-      '<div class="wa-stock__sugbar"><button type="button" ' +
-      'class="wa-stock__sugx" data-sugx aria-label="Close suggestions">' +
-      '<i data-lucide="x"></i></button></div>' + html;
+    hideAllSuggests(box);
+    rememberSuggestHome(box);
+    box.innerHTML = suggestBarHtml() + html;
     box.hidden = false;
     floatSuggest(box);
+    setSugMask(box.classList.contains("is-float"));
     refreshIcons();
   }
 
   function hideSuggest(box) {
+    if (!box) return;
     box.hidden = true;
     box.innerHTML = "";
-    box.classList.remove("is-float");
-    box.style.left = box.style.top = box.style.bottom =
-      box.style.width = box.style.maxHeight = box.style.visibility = "";
+    clearSuggestPos(box);
+    if (!root.querySelector(".wa-stock__suggest.is-float:not([hidden])")) {
+      setSugMask(false);
+    }
   }
 
   var itemSearchTimer = null;
@@ -3153,26 +3242,28 @@
       });
   });
 
-  // Suggestion dropdowns float over the next input — they stay
-  // dismissible via the × button, Escape, or a tap outside.
-  els.stockPanel.addEventListener("click", function (e) {
+  // Suggestion dropdowns float over the next input — dismiss via Close,
+  // the dim mask, Escape, or a tap outside the active field.
+  // Listen on root: floated suggests are reparented out of the stock panel.
+  root.addEventListener("click", function (e) {
     var x = e.target.closest("[data-sugx]");
-    if (!x) return;
+    if (!x || !root.contains(x)) return;
+    e.preventDefault();
     var box = x.closest(".wa-stock__suggest");
     if (box) hideSuggest(box);
   });
-  els.stockPanel.addEventListener("keydown", function (e) {
+  root.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
-    root.querySelectorAll(".wa-stock__suggest:not([hidden])")
-      .forEach(hideSuggest);
+    hideAllSuggests();
   });
   document.addEventListener("pointerdown", function (e) {
+    if (e.target.closest && e.target.closest(".wa-stock__sugmask")) return;
     root.querySelectorAll(".wa-stock__suggest:not([hidden])").forEach(
       function (box) {
         // Taps inside the dropdown or its own field keep it open.
-        if (box.parentElement && box.parentElement.contains(e.target)) {
-          return;
-        }
+        if (box.contains(e.target)) return;
+        var home = suggestHome(box);
+        if (home && home.contains(e.target)) return;
         hideSuggest(box);
       }
     );

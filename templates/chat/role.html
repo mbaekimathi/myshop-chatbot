@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}{{ role_label }} — {{ company_name|default:"MY-SHOP" }} Chat{% endblock %}
+{% block body_class %}page-chat{% endblock %}
+
+{% block body %}
+<section class="comms wa-app role-app">
+  <header class="wa-app__bar">
+    <div class="wa-app__brand">
+      <span class="comms-avatar wa-app__logo" data-tone="1" aria-hidden="true">
+        <i data-lucide="{{ role_icon }}"></i>
+      </span>
+      <div>
+        <strong>{{ role_label }}</strong>
+        <span>{{ company_name|default:"MY-SHOP" }} · staff workspace</span>
+      </div>
+    </div>
+    <div class="wa-app__bar-actions">
+      <button type="button" class="comms-icon-btn" data-theme-toggle aria-label="Toggle dark mode" title="Toggle dark mode">
+        <i data-lucide="moon" data-icon-dark></i><i data-lucide="sun" data-icon-light></i>
+      </button>
+      <form method="post" action="{% url 'chat:logout' %}" style="display:inline">
+        {% csrf_token %}
+        <button type="submit" class="comms-icon-btn" title="Sign out" aria-label="Sign out">
+          <i data-lucide="log-out"></i>
+        </button>
+      </form>
+    </div>
+  </header>
+
+  <div class="role-shell">
+    <div class="role-empty">
+      <span class="role-empty__icon" aria-hidden="true">
+        <i data-lucide="{{ role_icon }}"></i>
+      </span>
+      <h1>{{ role_label }}</h1>
+      <p>Your workspace is ready — tools for this role will appear here soon.</p>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  (function () {
+    var themeBtn = document.querySelector("[data-theme-toggle]");
+    function paint() {
+      var dark = document.documentElement.getAttribute("data-theme") === "dark";
+      if (themeBtn) {
+        themeBtn.querySelector("[data-icon-dark]").hidden = dark;
+        themeBtn.querySelector("[data-icon-light]").hidden = !dark;
+      }
+    }
+    if (themeBtn) {
+      themeBtn.addEventListener("click", function () {
+        var dark = document.documentElement.getAttribute("data-theme") === "dark";
+        var next = dark ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", next);
+        try { localStorage.setItem("myshop-theme", next); } catch (e) {}
+        paint();
+      });
+    }
+    paint();
+    if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
+  })();
+</script>
+{% endblock %}

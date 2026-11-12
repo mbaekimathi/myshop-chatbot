@@ -4,6 +4,10 @@ A shop signs in with its shared 6-digit `login_code` and password (the hash
 lives in `shops_shop.password_hash`, written by MY-SHOP with Django's
 hasher). Verified sessions store the shop id under a namespaced session key
 independent of any MY-SHOP cookies.
+
+Employees sign in with their 6-digit staff ID + password. Admins and IT
+land on the all-shops view; store managers get the central-store workspace;
+other roles get a role home (tools appear as they are added).
 """
 
 import re
@@ -12,6 +16,7 @@ from functools import wraps
 from django.contrib.auth.hashers import check_password, make_password
 from django.http import JsonResponse
 from django.shortcuts import redirect
+from django.urls import reverse
 
 from .myshop_models import Shop
 
@@ -19,13 +24,61 @@ SESSION_SHOP_KEY = "chatbot_shop_id"
 SESSION_EMPLOYEE_KEY = "chatbot_employee_id"
 LOGIN_CODE_RE = re.compile(r"^\d{6}$")
 
-# Roles allowed to sign in with an employee account — these see all shops.
-EMPLOYEE_ROLES = {
+# Every MY-SHOP employee role that may sign in via the Employee tab.
+ALL_EMPLOYEE_ROLES = {
+    "employee",
     "super_admin",
     "company_manager",
     "shop_manager",
     "store_manager",
+    "shop_cashier",
     "it_support",
+    "rider",
+}
+
+# Roles that may open the combined all-shops assistant.
+ALL_SHOPS_ROLES = {
+    "super_admin",
+    "company_manager",
+    "it_support",
+}
+
+# Back-compat alias — previously gated who could sign in at all.
+EMPLOYEE_ROLES = ALL_EMPLOYEE_ROLES
+
+ROLE_URL_SEGMENTS = {
+    "employee": "employee",
+    "super_admin": "super-admin",
+    "company_manager": "company-manager",
+    "shop_manager": "shop-manager",
+    "store_manager": "store-manager",
+    "shop_cashier": "shop-cashier",
+    "it_support": "it-support",
+    "rider": "rider",
+}
+
+ROLE_FROM_URL_SEGMENT = {slug: role for role, slug in ROLE_URL_SEGMENTS.items()}
+
+ROLE_LABELS = {
+    "employee": "Employee",
+    "super_admin": "Super Admin",
+    "company_manager": "Company Manager",
+    "shop_manager": "Shop Manager",
+    "store_manager": "Store Manager",
+    "shop_cashier": "Shop Cashier",
+    "it_support": "IT Support",
+    "rider": "Rider",
+}
+
+ROLE_ICONS = {
+    "employee": "badge-check",
+    "super_admin": "shield-check",
+    "company_manager": "building-2",
+    "shop_manager": "store",
+    "store_manager": "warehouse",
+    "shop_cashier": "scan-barcode",
+    "it_support": "monitor-cog",
+    "rider": "bike",
 }
 
 _DUMMY_HASH = None
@@ -36,6 +89,33 @@ def _dummy_hash() -> str:
     if _DUMMY_HASH is None:
         _DUMMY_HASH = make_password("chatbot-dummy-not-a-real-secret")
     return _DUMMY_HASH
+
+
+def can_view_all_shops(role: str) -> bool:
+    return (role or "") in ALL_SHOPS_ROLES
+
+
+def role_slug(role: str) -> str:
+    return ROLE_URL_SEGMENTS.get(role or "", "employee")
+
+
+def role_from_slug(slug: str) -> str | None:
+    return ROLE_FROM_URL_SEGMENT.get(slug or "")
+
+
+def role_label(role: str) -> str:
+    return ROLE_LABELS.get(role or "", (role or "Employee").replace("_", " ").title())
+
+
+def role_icon(role: str) -> str:
+    return ROLE_ICONS.get(role or "", "badge-check")
+
+
+def role_home_url(role: str) -> str:
+    """Path for the signed-in employee's landing page."""
+    if can_view_all_shops(role):
+        return reverse("chat:all_shops")
+    return reverse("chat:role_home", kwargs={"slug": role_slug(role)})
 
 
 def authenticate_shop(login_code: str, password: str):
@@ -60,9 +140,9 @@ def authenticate_shop(login_code: str, password: str):
 def authenticate_employee(employee_id: str, password: str):
     """Return the active staff profile on valid credentials, else None.
 
-    Mirrors MY-SHOP's employee sign-in: the 6-digit employee_id maps to an
-    auth_user row; the Argon2 hash on it does the password check. Only
-    admin/manager/IT-support roles may use the all-shops view.
+    Any active MY-SHOP employee role may sign in. Admins / IT are routed to
+    all-shops; store managers get the central-store workspace; other roles
+    land on their role home.
     """
     code = re.sub(r"\D+", "", employee_id or "")
     password = password or ""
@@ -78,7 +158,7 @@ def authenticate_employee(employee_id: str, password: str):
             [code],
         )
         row = cur.fetchone()
-    if row is None or row[2] not in EMPLOYEE_ROLES:
+    if row is None or row[2] not in ALL_EMPLOYEE_ROLES:
         check_password(password, _dummy_hash())
         return None
     user = User.objects.filter(pk=row[1]).first()
@@ -97,7 +177,7 @@ def login_employee(request, employee: dict) -> None:
 
 
 def current_employee(request):
-    """Signed-in staff member (all-shops view) or None."""
+    """Signed-in staff member or None."""
     emp_id = request.session.get(SESSION_EMPLOYEE_KEY)
     if not emp_id:
         return None
@@ -110,7 +190,7 @@ def current_employee(request):
             [emp_id],
         )
         row = cur.fetchone()
-    if row is None or row[1] not in EMPLOYEE_ROLES:
+    if row is None or row[1] not in ALL_EMPLOYEE_ROLES:
         request.session.pop(SESSION_EMPLOYEE_KEY, None)
         request.session.pop("chatbot_employee_role", None)
         return None
@@ -144,6 +224,7 @@ def logout_shop(request) -> None:
     request.session.pop(SESSION_SHOP_KEY, None)
     request.session.pop(SESSION_EMPLOYEE_KEY, None)
     request.session.pop("chatbot_employee_role", None)
+    request.session.pop("chatbot_all_shops", None)
 
 
 def current_shop(request):
@@ -192,7 +273,45 @@ def api_shop_required(view):
     return wrapper
 
 
-def _login_url() -> str:
-    from django.urls import reverse
+def api_store_manager_required(view):
+    """API guard — Store Manager employee session required."""
 
+    @wraps(view)
+    def wrapper(request, *args, **kwargs):
+        employee = current_employee(request)
+        if employee is None:
+            return JsonResponse(
+                {"ok": False, "error": "authentication required"}, status=401
+            )
+        if employee.get("role") != "store_manager":
+            return JsonResponse(
+                {"ok": False, "error": "store manager access required"}, status=403
+            )
+        request.chat_employee = employee
+        return view(request, *args, **kwargs)
+
+    return wrapper
+
+
+def api_rider_required(view):
+    """API guard — Rider employee session required."""
+
+    @wraps(view)
+    def wrapper(request, *args, **kwargs):
+        employee = current_employee(request)
+        if employee is None:
+            return JsonResponse(
+                {"ok": False, "error": "authentication required"}, status=401
+            )
+        if employee.get("role") != "rider":
+            return JsonResponse(
+                {"ok": False, "error": "rider access required"}, status=403
+            )
+        request.chat_employee = employee
+        return view(request, *args, **kwargs)
+
+    return wrapper
+
+
+def _login_url() -> str:
     return reverse("chat:login")
